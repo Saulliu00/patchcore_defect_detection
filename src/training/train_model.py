@@ -1,4 +1,4 @@
-# src/training/train_model.py - Fixed and verified version
+# src/training/train_model.py - Fixed version with better Anomalib compatibility
 import os
 from pathlib import Path
 import torch
@@ -9,7 +9,7 @@ warnings.filterwarnings("ignore")
 
 # Import with compatibility handling
 try:
-    # Try Anomalib 1.0+ imports
+    # Try Anomalib imports
     from anomalib.data import Folder
     from anomalib.engine import Engine
     try:
@@ -25,6 +25,7 @@ except ImportError:
 
 from lightning.pytorch.callbacks import ModelCheckpoint
 from omegaconf import DictConfig
+import inspect
 
 class PatchCoreTrainer:
     """PatchCore model trainer with robust error handling"""
@@ -102,37 +103,97 @@ class PatchCoreTrainer:
             print("⚠️ Warning: No normal test images found - evaluation will be limited")
         if test_defective_count == 0:
             print("⚠️ Warning: No defective test images found - evaluation will be limited")
+        
+        # Setup Folder datamodule with version detection
+        self._setup_datamodule_with_compatibility(data_path)
+        
+    def _setup_datamodule_with_compatibility(self, data_path: Path):
+        """Setup datamodule with automatic version detection"""
+        
+        # Get Folder class signature to detect available parameters
+        folder_sig = inspect.signature(Folder.__init__)
+        folder_params = list(folder_sig.parameters.keys())
+        
+        print(f"📝 Detected Folder parameters: {folder_params}")
+        
+        # Build parameters based on what's available
+        params = {}
+        
+        # Always required parameters
+        params['root'] = data_path
+        
+        # Add name if it's required or available
+        if 'name' in folder_params:
+            params['name'] = self.config.dataset.name
             
-        # Setup Folder datamodule with proper parameters
+        # Add normal/abnormal dirs
+        if 'normal_dir' in folder_params:
+            params['normal_dir'] = self.config.dataset.normal_dir
+        if 'abnormal_dir' in folder_params:
+            params['abnormal_dir'] = self.config.dataset.abnormal_dir
+            
+        # Add optional parameters if available
+        optional_params = {
+            'train_batch_size': self.config.dataloader.train_batch_size,
+            'eval_batch_size': self.config.dataloader.eval_batch_size,
+            'num_workers': self.config.dataloader.num_workers,
+            'task': self.config.dataset.task if hasattr(self.config.dataset, 'task') else 'segmentation',
+            'image_size': tuple(self.config.dataset.image_size) if hasattr(self.config.dataset, 'image_size') else (256, 256),
+            'normal_split_ratio': 0.8,
+            'seed': 42
+        }
+        
+        # Only add parameters that are actually accepted
+        for param_name, param_value in optional_params.items():
+            if param_name in folder_params:
+                params[param_name] = param_value
+        
+        print(f"📦 Creating Folder datamodule with parameters: {list(params.keys())}")
+        
         try:
-            # Try with all parameters first
-            self.datamodule = Folder(
-                name=self.config.dataset.name,
-                root=data_path,
-                normal_dir=self.config.dataset.normal_dir,
-                abnormal_dir=self.config.dataset.abnormal_dir,
-                normal_split_ratio=0.8,  # 80% for training
-                seed=42,
-                train_batch_size=self.config.dataloader.train_batch_size,
-                eval_batch_size=self.config.dataloader.eval_batch_size,
-                num_workers=self.config.dataloader.num_workers,
-                task=self.config.dataset.task,
-                image_size=self.config.dataset.image_size
-            )
-            print("✅ Data module initialized with full configuration")
+            # Try creating with detected parameters
+            self.datamodule = Folder(**params)
+            print("✅ Data module initialized successfully")
             
         except TypeError as e:
+            print(f"⚠️ First attempt failed: {e}")
+            
             # Fallback to minimal parameters
-            print(f"⚠️ Using minimal datamodule parameters: {e}")
-            self.datamodule = Folder(
-                root=data_path,
-                normal_dir=self.config.dataset.normal_dir,
-                abnormal_dir=self.config.dataset.abnormal_dir,
-                train_batch_size=self.config.dataloader.train_batch_size,
-                eval_batch_size=self.config.dataloader.eval_batch_size,
-                num_workers=self.config.dataloader.num_workers
-            )
-            print("✅ Data module initialized with minimal configuration")
+            minimal_params = {
+                'root': data_path,
+                'normal_dir': self.config.dataset.normal_dir,
+                'abnormal_dir': self.config.dataset.abnormal_dir,
+            }
+            
+            # Add name if required
+            if 'name' in str(e) and 'name' in folder_params:
+                minimal_params['name'] = self.config.dataset.name
+                
+            print(f"🔄 Retrying with minimal parameters: {list(minimal_params.keys())}")
+            
+            try:
+                self.datamodule = Folder(**minimal_params)
+                print("✅ Data module initialized with minimal configuration")
+                
+                # Manually set batch sizes if not in constructor
+                if hasattr(self.datamodule, 'train_batch_size'):
+                    self.datamodule.train_batch_size = self.config.dataloader.train_batch_size
+                if hasattr(self.datamodule, 'eval_batch_size'):
+                    self.datamodule.eval_batch_size = self.config.dataloader.eval_batch_size
+                if hasattr(self.datamodule, 'num_workers'):
+                    self.datamodule.num_workers = self.config.dataloader.num_workers
+                    
+            except Exception as e2:
+                print(f"❌ Failed to create datamodule: {e2}")
+                print("Attempting final fallback...")
+                
+                # Ultimate fallback - try with just root
+                try:
+                    self.datamodule = Folder(root=data_path)
+                    print("✅ Data module initialized with root only")
+                except Exception as e3:
+                    print(f"❌ Critical error creating datamodule: {e3}")
+                    raise
         
     def setup_engine(self):
         """Setup training engine with proper device detection"""
@@ -144,10 +205,8 @@ class PatchCoreTrainer:
         # Model checkpoint callback
         checkpoint_callback = ModelCheckpoint(
             dirpath=Path(self.config.trainer.default_root_dir) / "checkpoints",
-            filename="patchcore-{epoch:02d}-{image_AUROC:.3f}",
+            filename="patchcore-{epoch:02d}",
             save_top_k=1,
-            monitor="image_AUROC",
-            mode="max",
             save_last=True
         )
         callbacks.append(checkpoint_callback)
@@ -192,8 +251,9 @@ class PatchCoreTrainer:
         print("="*50 + "\n")
         
         try:
-            # Prepare datamodule
-            self.datamodule.setup()
+            # Prepare datamodule if needed
+            if hasattr(self.datamodule, 'setup'):
+                self.datamodule.setup()
             
             # Train the model
             self.engine.fit(
@@ -210,19 +270,22 @@ class PatchCoreTrainer:
             print("\n🔄 Retrying with reduced settings...")
             
             # Reduce batch size and workers
-            self.config.dataloader.train_batch_size = max(1, self.config.dataloader.train_batch_size // 2)
-            self.config.dataloader.eval_batch_size = max(1, self.config.dataloader.eval_batch_size // 2)
-            self.config.dataloader.num_workers = 0  # Disable multiprocessing
+            if hasattr(self.datamodule, 'train_batch_size'):
+                self.datamodule.train_batch_size = max(1, self.datamodule.train_batch_size // 2)
+            if hasattr(self.datamodule, 'eval_batch_size'):
+                self.datamodule.eval_batch_size = max(1, self.datamodule.eval_batch_size // 2)
+            if hasattr(self.datamodule, 'num_workers'):
+                self.datamodule.num_workers = 0
             
-            print(f"📉 Reduced batch_size to {self.config.dataloader.train_batch_size}")
-            print(f"📉 Disabled multiprocessing")
+            print(f"📉 Reduced settings applied")
             
-            # Recreate components with reduced settings
-            self.setup_data()
+            # Recreate engine with reduced settings
             self.setup_engine()
             
             try:
-                self.datamodule.setup()
+                if hasattr(self.datamodule, 'setup'):
+                    self.datamodule.setup()
+                    
                 self.engine.fit(
                     model=self.model,
                     datamodule=self.datamodule
@@ -250,8 +313,8 @@ class PatchCoreTrainer:
             'config': dict(self.config),
             'model_type': 'patchcore',
             'backbone': self.config.model.backbone,
-            'image_size': self.config.dataset.image_size,
-            'normalization': self.config.dataset.normalization
+            'image_size': list(self.config.dataset.image_size) if hasattr(self.config.dataset, 'image_size') else [256, 256],
+            'normalization': self.config.dataset.normalization if hasattr(self.config.dataset, 'normalization') else 'imagenet'
         }, model_path)
         
         print(f"💾 Model saved to: {model_path}")
@@ -263,7 +326,7 @@ class PatchCoreTrainer:
         
         try:
             # Ensure datamodule is setup
-            if not hasattr(self.datamodule, 'test_dataloader'):
+            if hasattr(self.datamodule, 'setup'):
                 self.datamodule.setup()
             
             # Test the model
@@ -285,6 +348,7 @@ class PatchCoreTrainer:
                 
         except Exception as e:
             print(f"❌ Evaluation failed: {e}")
+            print("This is often due to missing test data or version incompatibilities")
             return {"error": str(e)}
         
     def prepare_for_deployment(self) -> Path:
@@ -306,8 +370,8 @@ class PatchCoreTrainer:
                 'coreset_sampling_ratio': self.config.model.coreset_sampling_ratio,
                 'num_neighbors': self.config.model.num_neighbors,
             },
-            'image_size': list(self.config.dataset.image_size),
-            'normalization': self.config.dataset.normalization,
+            'image_size': list(self.config.dataset.image_size) if hasattr(self.config.dataset, 'image_size') else [256, 256],
+            'normalization': self.config.dataset.normalization if hasattr(self.config.dataset, 'normalization') else 'imagenet',
             'tiling_config': {
                 'tile_size': list(self.config.tiling.tile_size),
                 'stride': list(self.config.tiling.stride),
