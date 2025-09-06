@@ -43,8 +43,7 @@ class PatchCoreTrainer:
                 layers=self.config.model.layers,
                 pre_trained=self.config.model.pre_trained,
                 coreset_sampling_ratio=self.config.model.coreset_sampling_ratio,
-                num_neighbors=self.config.model.num_neighbors,
-            )
+                num_neighbors=self.config.model.num_neighbors)
             print("✅ PatchCore model initialized successfully")
         except Exception as e:
             print(f"❌ Failed to initialize PatchCore: {e}")
@@ -81,13 +80,9 @@ class PatchCoreTrainer:
                 root=data_path,
                 normal_dir=self.config.dataset.normal_dir,
                 abnormal_dir=self.config.dataset.abnormal_dir,
-                image_size=tuple(self.config.dataset.image_size),
-                center_crop=self.config.dataset.center_crop,
-                normalization=self.config.dataset.normalization,
                 train_batch_size=self.config.dataloader.train_batch_size,
                 eval_batch_size=self.config.dataloader.eval_batch_size,
-                num_workers=self.config.dataloader.num_workers,
-            )
+                num_workers=self.config.dataloader.num_workers)
             print("✅ Data module setup successfully")
         except Exception as e:
             print(f"❌ Failed to setup data module: {e}")
@@ -99,10 +94,8 @@ class PatchCoreTrainer:
                     root=data_path,
                     normal_dir=self.config.dataset.normal_dir,
                     abnormal_dir=self.config.dataset.abnormal_dir,
-                    image_size=tuple(self.config.dataset.image_size),
                     train_batch_size=self.config.dataloader.train_batch_size,
-                    eval_batch_size=self.config.dataloader.eval_batch_size,
-                )
+                    eval_batch_size=self.config.dataloader.eval_batch_size)
                 print("✅ Data module setup successfully with minimal parameters")
             except Exception as e2:
                 print(f"❌ Even minimal setup failed: {e2}")
@@ -122,8 +115,7 @@ class PatchCoreTrainer:
             save_top_k=1,
             monitor="image_AUROC",
             mode="max",
-            save_last=True,
-        )
+            save_last=True)
         callbacks.append(checkpoint_callback)
         
         # Get precision setting
@@ -142,8 +134,7 @@ class PatchCoreTrainer:
                 logger=True,
                 log_every_n_steps=self.config.trainer.log_every_n_steps,
                 val_check_interval=self.config.trainer.val_check_interval,
-                precision=precision,
-            )
+                precision=precision)
             print("✅ Training engine setup successfully")
         except Exception as e:
             print(f"❌ Failed to setup training engine: {e}")
@@ -155,10 +146,8 @@ class PatchCoreTrainer:
         
         print("Starting training process...")
         try:
-            self.engine.fit(
-                model=self.model,
-                datamodule=self.datamodule,
-            )
+            self.engine.fit(model=self.model,
+                datamodule=self.datamodule)
             print("✅ Training completed successfully")
         except Exception as e:
             print(f"❌ Training failed: {e}")
@@ -176,10 +165,8 @@ class PatchCoreTrainer:
             self.setup_engine()
             
             try:
-                self.engine.fit(
-                    model=self.model,
-                    datamodule=self.datamodule,
-                )
+                self.engine.fit(model=self.model,
+                    datamodule=self.datamodule)
                 print("✅ Training completed with reduced settings")
             except Exception as e2:
                 print(f"❌ Training failed even with reduced settings: {e2}")
@@ -206,8 +193,7 @@ class PatchCoreTrainer:
             # Test the model
             test_results = self.engine.test(
                 model=self.model,
-                datamodule=self.datamodule,
-            )
+                datamodule=self.datamodule)
             
             print("✅ Evaluation completed successfully")
             return test_results[0] if test_results else {}
@@ -262,6 +248,44 @@ except ImportError:
 from lightning.pytorch.callbacks import ModelCheckpoint, EarlyStopping
 import numpy as np
 
+# --- Windows-safe patch for anomalib versioned workspace ---
+try:
+    from anomalib.utils import path as _anom_path
+    from pathlib import Path as _Path
+
+    def _safe_create_versioned_dir(root_dir):
+        root_dir = _Path(root_dir)
+        root_dir.mkdir(parents=True, exist_ok=True)
+        # find next vN
+        n = 0
+        while (root_dir / f"v{n}").exists():
+            n += 1
+        new_version_dir = root_dir / f"v{n}"
+        new_version_dir.mkdir(parents=True, exist_ok=True)
+        # Try to create 'latest' symlink; fall back silently if not permitted (Windows without dev mode/admin)
+        latest_link_path = root_dir / "latest"
+        try:
+            if latest_link_path.exists() or latest_link_path.is_symlink():
+                try:
+                    latest_link_path.unlink()
+                except Exception:
+                    pass
+            latest_link_path.symlink_to(new_version_dir, target_is_directory=True)
+        except Exception:
+            # Best effort: ensure a normal folder exists so downstream code that writes into 'latest' won't explode
+            try:
+                latest_link_path.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
+        return new_version_dir
+
+    # Monkeypatch anomalib to use the safe function
+    _anom_path.create_versioned_dir = _safe_create_versioned_dir
+except Exception:
+    # If anomalib import changes in future versions, fail open and let default behavior run
+    pass
+# --- end Windows-safe patch ---
+
 class PatchCoreTrainer:
     def __init__(self, config):
         self.config = config
@@ -281,8 +305,7 @@ class PatchCoreTrainer:
             layers=self.config.model.layers,
             pre_trained=self.config.model.pre_trained,
             coreset_sampling_ratio=self.config.model.coreset_sampling_ratio,
-            num_neighbors=self.config.model.num_neighbors,
-        )
+            num_neighbors=self.config.model.num_neighbors)
         
     def setup_data(self):
         """Setup data module"""
@@ -314,14 +337,9 @@ class PatchCoreTrainer:
             root=data_path,
             normal_dir=self.config.dataset.normal_dir,
             abnormal_dir=self.config.dataset.abnormal_dir,
-            task=self.config.dataset.task,
-            image_size=tuple(self.config.dataset.image_size),
-            center_crop=self.config.dataset.center_crop,
-            normalization=self.config.dataset.normalization,
             train_batch_size=self.config.dataloader.train_batch_size,
             eval_batch_size=self.config.dataloader.eval_batch_size,
-            num_workers=self.config.dataloader.num_workers,
-        )
+            num_workers=self.config.dataloader.num_workers)
         
     def setup_engine(self):
         """Setup training engine"""
@@ -337,8 +355,7 @@ class PatchCoreTrainer:
             save_top_k=1,
             monitor="image_AUROC",
             mode="max",
-            save_last=True,
-        )
+            save_last=True)
         callbacks.append(checkpoint_callback)
         
         # Get precision setting
@@ -356,8 +373,7 @@ class PatchCoreTrainer:
             logger=True,
             log_every_n_steps=self.config.trainer.log_every_n_steps,
             val_check_interval=self.config.trainer.val_check_interval,
-            precision=precision,
-        )
+            precision=precision)
         
     def train(self):
         """Train the model"""
@@ -365,10 +381,8 @@ class PatchCoreTrainer:
         
         print("Starting training process...")
         try:
-            self.engine.fit(
-                model=self.model,
-                datamodule=self.datamodule,
-            )
+            self.engine.fit(model=self.model,
+                datamodule=self.datamodule)
         except Exception as e:
             print(f"Training failed: {e}")
             print("Trying with reduced settings...")
@@ -382,10 +396,8 @@ class PatchCoreTrainer:
             self.setup_data()
             self.setup_engine()
             
-            self.engine.fit(
-                model=self.model,
-                datamodule=self.datamodule,
-            )
+            self.engine.fit(model=self.model,
+                datamodule=self.datamodule)
         
         # Get the best model path
         model_path = Path(self.config.trainer.default_root_dir) / "patchcore_model.pth"
@@ -408,8 +420,7 @@ class PatchCoreTrainer:
             # Test the model
             test_results = self.engine.test(
                 model=self.model,
-                datamodule=self.datamodule,
-            )
+                datamodule=self.datamodule)
             
             return test_results[0] if test_results else {}
         except Exception as e:
