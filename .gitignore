@@ -1,0 +1,94 @@
+# .gitignore for PatchCore Defect Detection Project
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# PyTorch Models (Large files - exclude from git)
+models/saved_models/
+models/deployment/
+*.pth
+*.pt
+*.onnx
+
+# Training Data (Usually too large for git)
+data/train/
+data/test/
+data/val/
+database/images/
+
+# Logs and Outputs
+logs/
+*.log
+runs/
+lightning_logs/
+
+# TensorBoard
+logs/tensorboard/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+
+# CSV results (optional - you might want to include small ones)
+database/detection_results.csv
+
+# Large deployment packages
+deployment_package/
+
+# Pytest
+.pytest_cache/
+.coverage
+
+# MyPy
+.mypy_cache/
+.dmypy.json
+dmypy.json
