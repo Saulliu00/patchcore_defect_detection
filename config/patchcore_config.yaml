@@ -1,4 +1,4 @@
-# config/patchcore_config.yaml - GPU Optimized Configuration
+# config/patchcore_config.yaml
 model:
   name: patchcore
   backbone: wide_resnet50_2
@@ -16,25 +16,23 @@ dataset:
   normal_dir: good
   abnormal_dir: defective
   task: segmentation
-  image_size: [1024, 1024]  # High resolution for RTX 3080 Ti
+  image_size: [1024, 1024]  # High resolution training
   center_crop: null
   normalization: imagenet
   
 dataloader:
-  train_batch_size: 16        # Increased for RTX 3080 Ti (12GB VRAM)
-  eval_batch_size: 16         # Increased batch size
-  num_workers: 8              # Increased workers for faster data loading
+  train_batch_size: 8
+  eval_batch_size: 8
+  num_workers: 4
   
 trainer:
-  accelerator: gpu            # Use GPU acceleration
-  devices: 1                  # Single GPU
-  precision: 16               # Mixed precision for faster training
+  accelerator: auto
+  devices: 1
   default_root_dir: ./models/saved_models
-  max_epochs: 1               # PatchCore needs only 1 epoch
+  max_epochs: 1  # PatchCore is non-parametric, only needs 1 epoch
   logger: true
   log_every_n_steps: 10
   val_check_interval: 1.0
-  enable_progress_bar: true
   
 metrics:
   image:
@@ -60,20 +58,13 @@ logging:
 tiling:
   apply: true
   tile_size: [256, 256]
-  stride: [128, 128]          # 50% overlap
+  stride: [128, 128]  # 50% overlap
   remove_border_count: 0
   mode: padding
   
-# GPU-specific optimizations
-gpu_optimizations:
-  mixed_precision: true       # Use automatic mixed precision
-  compile_model: false        # PyTorch 2.0 compilation (experimental)
-  channels_last: true         # Memory format optimization
-  benchmark_cudnn: true       # CuDNN benchmarking
-  
 # Deployment specific settings
 deployment:
-  device: cpu                 # Raspberry Pi will use CPU
+  device: cpu  # Raspberry Pi will use CPU
   precision: 32
   optimize_for_mobile: true
-  quantization: false
+  quantization: false  # Can enable for faster inference on Pi
