@@ -73,7 +73,7 @@ class PatchCoreTrainer:
             raise FileNotFoundError(f"Data directory not found: {data_path}")
             
         # Check for training data
-        train_good_path = data_path / "train" / self.config.dataset.normal_dir
+        train_good_path = data_path / self.config.dataset.normal_dir
         if not train_good_path.exists():
             raise FileNotFoundError(f"Training data not found: {train_good_path}")
             
@@ -252,8 +252,8 @@ class PatchCoreTrainer:
         
         try:
             # Prepare datamodule if needed
-            if hasattr(self.datamodule, 'setup'):
-                self.datamodule.setup()
+           if hasattr(self.datamodule, 'setup'):
+            self.datamodule.setup()
             
             # Train the model
             self.engine.fit(

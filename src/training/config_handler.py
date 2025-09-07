@@ -13,7 +13,7 @@ class ConfigHandler:
         if not self.config_path.exists():
             raise FileNotFoundError(f"Configuration file not found: {self.config_path}")
             
-        with open(self.config_path, 'r') as f:
+        with open(self.config_path, encoding="utf-8") as f:
             config_dict = yaml.safe_load(f)
             
         return OmegaConf.create(config_dict)
