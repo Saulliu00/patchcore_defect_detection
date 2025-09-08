@@ -1,4 +1,4 @@
-# src/training/train_model.py - Fixed version with better Anomalib compatibility
+# src/training/train_model.py - Fixed for proper Anomalib path handling
 import os
 from pathlib import Path
 import torch
@@ -28,7 +28,7 @@ from omegaconf import DictConfig
 import inspect
 
 class PatchCoreTrainer:
-    """PatchCore model trainer with robust error handling"""
+    """PatchCore model trainer - fixed for proper Anomalib path handling"""
     
     def __init__(self, config: DictConfig):
         self.config = config
@@ -64,18 +64,20 @@ class PatchCoreTrainer:
                 raise
         
     def setup_data(self):
-        """Setup data module with validation"""
+        """Setup data module with validation - handles normal-only training data"""
         print("📊 Setting up data module...")
         
-        # Validate data directory
-        data_path = Path(self.config.dataset.path)
+        # Validate data directory structure
+        data_path = Path(self.config.dataset.root)
         if not data_path.exists():
             raise FileNotFoundError(f"Data directory not found: {data_path}")
             
-        # Check for training data
-        train_good_path = data_path / self.config.dataset.normal_dir
+        # Check for training data (only normal data required)
+        train_path = data_path / "train"
+        train_good_path = train_path / self.config.dataset.normal_dir
+        
         if not train_good_path.exists():
-            raise FileNotFoundError(f"Training data not found: {train_good_path}")
+            raise FileNotFoundError(f"Training normal data not found: {train_good_path}")
             
         # Count training images
         image_extensions = ['*.jpg', '*.jpeg', '*.png', '*.bmp']
@@ -87,14 +89,37 @@ class PatchCoreTrainer:
         if len(training_images) == 0:
             raise ValueError(f"No training images found in {train_good_path}")
             
-        print(f"✅ Found {len(training_images)} training images")
+        print(f"✅ Found {len(training_images)} training images (normal/good)")
+        
+        # Check if defective training data exists (it shouldn't for PatchCore)
+        train_defective_path = train_path / self.config.dataset.abnormal_dir
+        if train_defective_path.exists():
+            defective_count = len(list(train_defective_path.glob("*.[jp][pn]g")))
+            if defective_count > 0:
+                print(f"⚠️ Warning: Found {defective_count} defective images in training data")
+                print("⚠️ PatchCore trains on normal data only - defective training data will be ignored")
         
         # Validate test data
-        test_good_path = data_path / "test" / self.config.dataset.normal_dir
-        test_defective_path = data_path / "test" / self.config.dataset.abnormal_dir
+        test_path = data_path / "test"
+        test_good_path = test_path / self.config.dataset.normal_dir
+        test_defective_path = test_path / self.config.dataset.abnormal_dir
         
-        test_good_count = len(list(test_good_path.glob("*.[jp][pn]g"))) if test_good_path.exists() else 0
-        test_defective_count = len(list(test_defective_path.glob("*.[jp][pn]g"))) if test_defective_path.exists() else 0
+        test_good_count = 0
+        test_defective_count = 0
+        
+        if test_good_path.exists():
+            test_good_images = []
+            for ext in image_extensions:
+                test_good_images.extend(list(test_good_path.glob(ext)))
+                test_good_images.extend(list(test_good_path.glob(ext.upper())))
+            test_good_count = len(test_good_images)
+        
+        if test_defective_path.exists():
+            test_defective_images = []
+            for ext in image_extensions:
+                test_defective_images.extend(list(test_defective_path.glob(ext)))
+                test_defective_images.extend(list(test_defective_path.glob(ext.upper())))
+            test_defective_count = len(test_defective_images)
         
         print(f"✅ Found {test_good_count} normal test images")
         print(f"✅ Found {test_defective_count} defective test images")
@@ -104,11 +129,11 @@ class PatchCoreTrainer:
         if test_defective_count == 0:
             print("⚠️ Warning: No defective test images found - evaluation will be limited")
         
-        # Setup Folder datamodule with version detection
-        self._setup_datamodule_with_compatibility(data_path)
+        # Setup Folder datamodule with correct path handling
+        self._setup_datamodule_with_correct_paths(data_path)
         
-    def _setup_datamodule_with_compatibility(self, data_path: Path):
-        """Setup datamodule with automatic version detection"""
+    def _setup_datamodule_with_correct_paths(self, data_path: Path):
+        """Setup datamodule with correct path handling for Anomalib"""
         
         # Get Folder class signature to detect available parameters
         folder_sig = inspect.signature(Folder.__init__)
@@ -116,30 +141,38 @@ class PatchCoreTrainer:
         
         print(f"📝 Detected Folder parameters: {folder_params}")
         
-        # Build parameters based on what's available
-        params = {}
+        # CRITICAL: Create the expected directory structure for Anomalib
+        # Anomalib expects the structure: root/normal_dir and root/abnormal_dir
+        # But our data is in: data/train/good and data/test/good, data/test/defective
         
-        # Always required parameters
-        params['root'] = data_path
+        # Strategy 1: Try with train as root
+        train_root = data_path / "train"
         
-        # Add name if it's required or available
+        print(f"🔍 Trying Strategy 1: Using {train_root} as root")
+        print(f"   Looking for: {train_root / self.config.dataset.normal_dir}")
+        
+        # Build parameters for Strategy 1
+        params = {
+            'root': train_root,
+        }
+        
+        # Add name if required
         if 'name' in folder_params:
             params['name'] = self.config.dataset.name
             
-        # Add normal/abnormal dirs
+        # Add directories
         if 'normal_dir' in folder_params:
-            params['normal_dir'] = self.config.dataset.normal_dir
+            params['normal_dir'] = self.config.dataset.normal_dir  # "good"
         if 'abnormal_dir' in folder_params:
-            params['abnormal_dir'] = self.config.dataset.abnormal_dir
+            params['abnormal_dir'] = self.config.dataset.abnormal_dir  # "defective"
             
-        # Add optional parameters if available
+        # Add optional parameters
         optional_params = {
             'train_batch_size': self.config.dataloader.train_batch_size,
             'eval_batch_size': self.config.dataloader.eval_batch_size,
             'num_workers': self.config.dataloader.num_workers,
             'task': self.config.dataset.task if hasattr(self.config.dataset, 'task') else 'segmentation',
             'image_size': tuple(self.config.dataset.image_size) if hasattr(self.config.dataset, 'image_size') else (256, 256),
-            'normal_split_ratio': 0.8,
             'seed': 42
         }
         
@@ -148,52 +181,119 @@ class PatchCoreTrainer:
             if param_name in folder_params:
                 params[param_name] = param_value
         
-        print(f"📦 Creating Folder datamodule with parameters: {list(params.keys())}")
+        print(f"📦 Strategy 1 - Creating Folder datamodule with parameters: {list(params.keys())}")
         
         try:
-            # Try creating with detected parameters
             self.datamodule = Folder(**params)
-            print("✅ Data module initialized successfully")
+            print("✅ Strategy 1 successful - Data module initialized")
+            return
             
-        except TypeError as e:
-            print(f"⚠️ First attempt failed: {e}")
+        except Exception as e1:
+            print(f"❌ Strategy 1 failed: {e1}")
             
-            # Fallback to minimal parameters
-            minimal_params = {
-                'root': data_path,
-                'normal_dir': self.config.dataset.normal_dir,
-                'abnormal_dir': self.config.dataset.abnormal_dir,
-            }
+            # Strategy 2: Try creating symlinks or copying data to expected structure
+            print(f"🔍 Trying Strategy 2: Creating expected structure")
             
-            # Add name if required
-            if 'name' in str(e) and 'name' in folder_params:
-                minimal_params['name'] = self.config.dataset.name
-                
-            print(f"🔄 Retrying with minimal parameters: {list(minimal_params.keys())}")
+            # Create temporary structure that Anomalib expects
+            temp_train_root = data_path / "anomalib_train"
+            temp_train_root.mkdir(exist_ok=True)
+            
+            # Create symlinks to actual data
+            temp_good_link = temp_train_root / self.config.dataset.normal_dir
+            temp_defective_link = temp_train_root / self.config.dataset.abnormal_dir
+            
+            # Remove existing symlinks if they exist
+            if temp_good_link.exists():
+                if temp_good_link.is_symlink():
+                    temp_good_link.unlink()
+                elif temp_good_link.is_dir():
+                    import shutil
+                    shutil.rmtree(temp_good_link)
+            
+            if temp_defective_link.exists():
+                if temp_defective_link.is_symlink():
+                    temp_defective_link.unlink()
+                elif temp_defective_link.is_dir():
+                    import shutil
+                    shutil.rmtree(temp_defective_link)
+            
+            # Create symlink to training good data
+            actual_train_good = data_path / "train" / self.config.dataset.normal_dir
+            if actual_train_good.exists():
+                try:
+                    if os.name == 'nt':  # Windows
+                        import shutil
+                        shutil.copytree(actual_train_good, temp_good_link)
+                        print(f"✅ Copied training data to {temp_good_link}")
+                    else:  # Unix/Linux
+                        temp_good_link.symlink_to(actual_train_good.absolute())
+                        print(f"✅ Created symlink: {temp_good_link} -> {actual_train_good}")
+                except Exception as symlink_error:
+                    print(f"⚠️ Symlink failed: {symlink_error}")
+                    # Fallback: copy directory
+                    import shutil
+                    shutil.copytree(actual_train_good, temp_good_link)
+                    print(f"✅ Copied training data to {temp_good_link}")
+            
+            # For defective data, create empty directory or link to test defective
+            test_defective = data_path / "test" / self.config.dataset.abnormal_dir
+            if test_defective.exists() and len(list(test_defective.glob("*.[jp][pn]g"))) > 0:
+                try:
+                    if os.name == 'nt':  # Windows
+                        import shutil
+                        shutil.copytree(test_defective, temp_defective_link)
+                        print(f"✅ Copied test defective data to {temp_defective_link}")
+                    else:  # Unix/Linux
+                        temp_defective_link.symlink_to(test_defective.absolute())
+                        print(f"✅ Created symlink: {temp_defective_link} -> {test_defective}")
+                except Exception as symlink_error:
+                    print(f"⚠️ Defective symlink failed: {symlink_error}")
+                    temp_defective_link.mkdir(exist_ok=True)
+                    print(f"✅ Created empty defective directory: {temp_defective_link}")
+            else:
+                temp_defective_link.mkdir(exist_ok=True)
+                print(f"✅ Created empty defective directory: {temp_defective_link}")
+            
+            # Now try with the new structure
+            params['root'] = temp_train_root
+            print(f"📦 Strategy 2 - Creating Folder datamodule with root: {temp_train_root}")
             
             try:
-                self.datamodule = Folder(**minimal_params)
-                print("✅ Data module initialized with minimal configuration")
+                self.datamodule = Folder(**params)
+                print("✅ Strategy 2 successful - Data module initialized with reorganized structure")
+                return
                 
-                # Manually set batch sizes if not in constructor
-                if hasattr(self.datamodule, 'train_batch_size'):
-                    self.datamodule.train_batch_size = self.config.dataloader.train_batch_size
-                if hasattr(self.datamodule, 'eval_batch_size'):
-                    self.datamodule.eval_batch_size = self.config.dataloader.eval_batch_size
-                if hasattr(self.datamodule, 'num_workers'):
-                    self.datamodule.num_workers = self.config.dataloader.num_workers
-                    
             except Exception as e2:
-                print(f"❌ Failed to create datamodule: {e2}")
-                print("Attempting final fallback...")
+                print(f"❌ Strategy 2 failed: {e2}")
                 
-                # Ultimate fallback - try with just root
+                # Strategy 3: Minimal fallback
+                print(f"🔍 Trying Strategy 3: Minimal configuration")
+                
+                minimal_params = {
+                    'root': temp_train_root,
+                }
+                
+                if 'name' in folder_params:
+                    minimal_params['name'] = self.config.dataset.name
+                
                 try:
-                    self.datamodule = Folder(root=data_path)
-                    print("✅ Data module initialized with root only")
+                    self.datamodule = Folder(**minimal_params)
+                    print("✅ Strategy 3 successful - Minimal data module initialized")
+                    
+                    # Manually set properties if possible
+                    if hasattr(self.datamodule, 'train_batch_size'):
+                        self.datamodule.train_batch_size = self.config.dataloader.train_batch_size
+                    if hasattr(self.datamodule, 'eval_batch_size'):
+                        self.datamodule.eval_batch_size = self.config.dataloader.eval_batch_size
+                    if hasattr(self.datamodule, 'num_workers'):
+                        self.datamodule.num_workers = self.config.dataloader.num_workers
+                        
                 except Exception as e3:
-                    print(f"❌ Critical error creating datamodule: {e3}")
-                    raise
+                    print(f"❌ All strategies failed!")
+                    print(f"Strategy 1 error: {e1}")
+                    print(f"Strategy 2 error: {e2}")
+                    print(f"Strategy 3 error: {e3}")
+                    raise RuntimeError("Failed to create datamodule with any strategy")
         
     def setup_engine(self):
         """Setup training engine with proper device detection"""
@@ -248,14 +348,18 @@ class PatchCoreTrainer:
         
         print("\n" + "="*50)
         print("🚀 Starting PatchCore training...")
+        print("💡 Training on NORMAL data only (as expected for PatchCore)")
         print("="*50 + "\n")
         
         try:
             # Prepare datamodule if needed
-           if hasattr(self.datamodule, 'setup'):
-            self.datamodule.setup()
+            print("🔧 Setting up datamodule...")
+            if hasattr(self.datamodule, 'setup'):
+                self.datamodule.setup()
+                print("✅ Datamodule setup completed")
             
             # Train the model
+            print("🎯 Starting training process...")
             self.engine.fit(
                 model=self.model,
                 datamodule=self.datamodule
@@ -265,27 +369,35 @@ class PatchCoreTrainer:
             
         except Exception as e:
             print(f"\n❌ Training failed: {e}")
+            import traceback
+            traceback.print_exc()
             
             # Try with reduced settings
             print("\n🔄 Retrying with reduced settings...")
             
             # Reduce batch size and workers
             if hasattr(self.datamodule, 'train_batch_size'):
-                self.datamodule.train_batch_size = max(1, self.datamodule.train_batch_size // 2)
+                old_batch = self.datamodule.train_batch_size
+                self.datamodule.train_batch_size = max(1, old_batch // 2)
+                print(f"📉 Reduced train batch size: {old_batch} -> {self.datamodule.train_batch_size}")
+                
             if hasattr(self.datamodule, 'eval_batch_size'):
-                self.datamodule.eval_batch_size = max(1, self.datamodule.eval_batch_size // 2)
+                old_eval = self.datamodule.eval_batch_size
+                self.datamodule.eval_batch_size = max(1, old_eval // 2)
+                print(f"📉 Reduced eval batch size: {old_eval} -> {self.datamodule.eval_batch_size}")
+                
             if hasattr(self.datamodule, 'num_workers'):
                 self.datamodule.num_workers = 0
-            
-            print(f"📉 Reduced settings applied")
+                print(f"📉 Set num_workers to 0")
             
             # Recreate engine with reduced settings
             self.setup_engine()
             
             try:
+                # Re-setup datamodule with new settings
                 if hasattr(self.datamodule, 'setup'):
                     self.datamodule.setup()
-                    
+                
                 self.engine.fit(
                     model=self.model,
                     datamodule=self.datamodule
@@ -294,6 +406,8 @@ class PatchCoreTrainer:
                 
             except Exception as e2:
                 print(f"\n❌ Training failed even with reduced settings: {e2}")
+                import traceback
+                traceback.print_exc()
                 raise
         
         # Save the model
@@ -325,10 +439,6 @@ class PatchCoreTrainer:
         print("\n📊 Evaluating model performance...")
         
         try:
-            # Ensure datamodule is setup
-            if hasattr(self.datamodule, 'setup'):
-                self.datamodule.setup()
-            
             # Test the model
             test_results = self.engine.test(
                 model=self.model,
