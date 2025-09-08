@@ -1,4 +1,4 @@
-# config/patchcore_config.yaml - Fixed for PatchCore (only normal data in training)
+# config/patchcore_config.yaml - Optimized for Normal-Only Training
 
 model:
   name: patchcore
@@ -14,19 +14,19 @@ dataset:
   name: folder
   format: folder
   
-  # Root path containing train and test folders
-  root: ./data/train
+  # Root path for training data
+  root: ./data
   
-  # Directory names for normal and abnormal data
-  normal_dir: good
-  abnormal_dir: defective  # This should NOT exist in train/ folder
+  # Directory names
+  normal_dir: good        # Contains normal/good samples
+  abnormal_dir: defective # Not used during training, only for testing
   
   task: segmentation
-  image_size: [256, 256]
+  image_size: [256, 256]  # Adjust based on your GPU memory
   center_crop: null
   normalization: imagenet
   
-  # Extensions to include
+  # File extensions to include
   extensions: [".jpg", ".jpeg", ".png", ".bmp"]
 
 dataloader:
@@ -42,6 +42,7 @@ trainer:
   logger: true
   log_every_n_steps: 10
   val_check_interval: 1.0
+  enable_progress_bar: true
 
 metrics:
   image:
@@ -66,7 +67,7 @@ logging:
 tiling:
   apply: true
   tile_size: [256, 256]
-  stride: [128, 128]
+  stride: [128, 128]  # 50% overlap
   remove_border_count: 0
   mode: padding
 
