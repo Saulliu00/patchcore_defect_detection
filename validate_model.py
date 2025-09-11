@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# validate_model.py - Validate the trained PatchCore model on test data
+# validate_model_complete.py - Complete fixed PatchCore validation
 
 import torch
 import numpy as np
@@ -10,287 +10,439 @@ from tqdm import tqdm
 import warnings
 warnings.filterwarnings("ignore")
 
-class PatchCoreValidator:
-    """Validate PatchCore model on test data"""
+# Fix Issue 1: Set tensor core precision for RTX 3080 Ti
+if torch.cuda.is_available():
+    torch.set_float32_matmul_precision('medium')
+    print("Tensor Core optimization enabled for RTX 3080 Ti")
+
+class CompletePatchCoreValidator:
+    """Complete PatchCore validator with memory bank handling"""
     
     def __init__(self, model_path, device=None):
         self.model_path = Path(model_path)
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model = None
-        self.load_model()
+        self.transform = None
         
-    def load_model(self):
-        """Load the trained PatchCore model"""
-        print(f"📦 Loading model from: {self.model_path}")
+        print(f"Initializing validator...")
+        print(f"  Model path: {self.model_path}")
+        print(f"  Device: {self.device}")
+        
+        # Step by step initialization
+        self._load_and_setup_model()
+        self._setup_transforms()
+        
+    def _load_and_setup_model(self):
+        """Load and setup the PatchCore model"""
+        print("\nLoading PatchCore model...")
         
         if not self.model_path.exists():
             raise FileNotFoundError(f"Model not found: {self.model_path}")
         
         try:
-            # Try loading with Anomalib
             from anomalib.models import Patchcore
             
             # Load checkpoint
             checkpoint = torch.load(self.model_path, map_location=self.device)
+            print(f"Checkpoint loaded successfully")
+            print(f"  Checkpoint keys: {list(checkpoint.keys())}")
             
             # Get model configuration
             if 'model_config' in checkpoint:
                 config = checkpoint['model_config']
-                self.model = Patchcore(
-                    backbone=config.get('backbone', 'resnet18'),
-                    layers=config.get('layers', ['layer2', 'layer3']),
-                    pre_trained=False,  # We'll load weights
-                    coreset_sampling_ratio=config.get('coreset_sampling_ratio', 0.1),
-                    num_neighbors=config.get('num_neighbors', 9)
-                )
             else:
                 # Default configuration
-                self.model = Patchcore(
-                    backbone='resnet18',
-                    layers=['layer2', 'layer3'],
-                    pre_trained=False,
-                    coreset_sampling_ratio=0.1,
-                    num_neighbors=9
-                )
+                config = {
+                    'backbone': checkpoint.get('backbone', 'wide_resnet50_2'),
+                    'layers': checkpoint.get('layers', ['layer2', 'layer3']),
+                    'coreset_sampling_ratio': 0.1,
+                    'num_neighbors': 9
+                }
+            
+            print(f"Model config: {config}")
+            
+            # Initialize model
+            self.model = Patchcore(
+                backbone=config['backbone'],
+                layers=config['layers'],
+                pre_trained=False,
+                coreset_sampling_ratio=config.get('coreset_sampling_ratio', 0.1),
+                num_neighbors=config.get('num_neighbors', 9)
+            )
             
             # Load state dict
             if 'model_state_dict' in checkpoint:
-                self.model.load_state_dict(checkpoint['model_state_dict'])
+                missing_keys, unexpected_keys = self.model.load_state_dict(checkpoint['model_state_dict'], strict=False)
+                if missing_keys:
+                    print(f"  Missing keys: {len(missing_keys)} keys")
+                if unexpected_keys:
+                    print(f"  Unexpected keys: {len(unexpected_keys)} keys")
             
             self.model.to(self.device)
             self.model.eval()
             
-            # Setup transforms
-            self.image_size = checkpoint.get('image_size', [256, 256])
-            self.setup_transforms()
+            print(f"Model loaded successfully on {self.device}")
             
-            print(f"✅ Model loaded successfully")
-            print(f"  Device: {self.device}")
-            print(f"  Image size: {self.image_size}")
-            
-        except ImportError:
-            print("❌ Anomalib not available, using basic validation")
-            self.model = None
-            self.setup_transforms()
+        except Exception as e:
+            print(f"Failed to load model: {e}")
+            raise
     
-    def setup_transforms(self):
-        """Setup image transformations"""
+    def _setup_transforms(self):
+        """Setup image transformations without resizing"""
         self.transform = transforms.Compose([
-            transforms.Resize(tuple(self.image_size)),
             transforms.ToTensor(),
             transforms.Normalize(
                 mean=[0.485, 0.456, 0.406],
                 std=[0.229, 0.224, 0.225]
             )
         ])
+        print("Transforms ready (no resizing)")
     
-    def process_image(self, image_path):
-        """Process a single image and get anomaly score"""
+    def _get_torch_model(self):
+        """Get the actual PyTorch model (handle Lightning wrapper)"""
+        if hasattr(self.model, 'model'):
+            return self.model.model  # Lightning wrapper
+        else:
+            return self.model  # Direct PyTorch model
+    
+    def check_memory_bank(self):
+        """Check if memory bank exists and is populated"""
+        print("\nChecking memory bank...")
+        
+        try:
+            torch_model = self._get_torch_model()
+            
+            if hasattr(torch_model, 'memory_bank'):
+                memory_bank = torch_model.memory_bank
+                memory_size = memory_bank.numel()
+                print(f"  Memory bank found: {memory_size} elements")
+                
+                if memory_size > 0:
+                    tensor_dims = len(memory_bank.size())
+                    print(f"  Memory bank dimensions: {tensor_dims}D")
+                    return True
+                else:
+                    print("  Memory bank is empty")
+                    return False
+            else:
+                print("  No memory_bank attribute found")
+                return False
+                
+        except Exception as e:
+            print(f"  Error checking memory bank: {e}")
+            return False
+    
+    def rebuild_memory_bank(self):
+        """Rebuild memory bank from training data"""
+        print("\nRebuilding memory bank from training data...")
+        
+        # Check training data
+        train_good = Path("data/train/good")
+        if not train_good.exists():
+            print(f"Training data directory not found: {train_good}")
+            return False
+        
+        image_files = list(train_good.glob("*.jpg")) + list(train_good.glob("*.png"))
+        if len(image_files) == 0:
+            print("No training images found!")
+            return False
+        
+        print(f"Found {len(image_files)} training images")
+        
+        try:
+            # Set model to training mode
+            self.model.train()
+            
+            # Process training images
+            processed_count = 0
+            for img_path in tqdm(image_files, desc="Building memory bank"):
+                try:
+                    # Load and preprocess image
+                    image = Image.open(img_path).convert('RGB')
+                    image_tensor = self.transform(image).unsqueeze(0).to(self.device)
+                    
+                    # Process through model (this populates memory bank)
+                    with torch.no_grad():
+                        _ = self.model(image_tensor)
+                    
+                    processed_count += 1
+                    
+                    # Check progress every 20 images
+                    if processed_count % 20 == 0:
+                        torch_model = self._get_torch_model()
+                        if hasattr(torch_model, 'memory_bank'):
+                            current_size = torch_model.memory_bank.numel()
+                            print(f"    Progress: {processed_count}/{len(image_files)}, Memory bank size: {current_size}")
+                    
+                except Exception as e:
+                    print(f"    Error processing {img_path.name}: {e}")
+                    continue
+            
+            # Set back to eval mode
+            self.model.eval()
+            
+            print(f"Processed {processed_count}/{len(image_files)} training images")
+            
+            # Check final memory bank size
+            torch_model = self._get_torch_model()
+            if hasattr(torch_model, 'memory_bank'):
+                final_size = torch_model.memory_bank.numel()
+                print(f"Final memory bank size: {final_size}")
+                return final_size > 0
+            else:
+                print("Memory bank still not found after rebuild")
+                return False
+                
+        except Exception as e:
+            print(f"Error rebuilding memory bank: {e}")
+            return False
+    
+    def test_single_image(self, image_path):
+        """Test inference on a single image"""
+        print(f"\nTesting single image: {image_path}")
+        
+        # Check if memory bank exists and is populated
+        if not self.check_memory_bank():
+            print("Memory bank is empty or missing, rebuilding...")
+            if not self.rebuild_memory_bank():
+                print("Failed to rebuild memory bank - cannot proceed with inference")
+                return None
+        
         try:
             # Load and transform image
             image = Image.open(image_path).convert('RGB')
-            image_tensor = self.transform(image).unsqueeze(0).to(self.device)
+            print(f"  Original image size: {image.size}")
             
-            if self.model is not None:
-                # Use Anomalib model
-                with torch.no_grad():
-                    outputs = self.model(image_tensor)
-                    
-                    # Get anomaly score
-                    if isinstance(outputs, dict):
-                        if 'pred_scores' in outputs:
-                            score = outputs['pred_scores'].cpu().item()
-                        elif 'anomaly_scores' in outputs:
-                            score = outputs['anomaly_scores'].cpu().item()
-                        else:
-                            score = 0.5  # Default if no score found
-                    else:
-                        score = outputs.cpu().item()
-                        
+            image_tensor = self.transform(image).unsqueeze(0).to(self.device)
+            tensor_dims = len(image_tensor.size())
+            tensor_elements = image_tensor.numel()
+            print(f"  Tensor: {tensor_dims}D with {tensor_elements} elements")
+            
+            # Run inference (pass tensor directly to model)
+            with torch.no_grad():
+                print("  Running model inference...")
+                outputs = self.model(image_tensor)
+                print(f"  Model outputs type: {type(outputs)}")
+                
+                # Extract score from outputs
+                score = self._extract_score_from_outputs(outputs)
+                print(f"  Final anomaly score: {score}")
+                
                 return score
-            else:
-                # Fallback: random score for testing
-                return np.random.random()
                 
         except Exception as e:
-            print(f"❌ Error processing {image_path}: {e}")
+            print(f"  Error testing image: {e}")
+            import traceback
+            print(f"  Full traceback: {traceback.format_exc()}")
             return None
     
-    def validate(self, test_good_dir, test_defective_dir, threshold=None):
-        """Validate model on test data"""
-        print("\n" + "="*60)
-        print("🧪 VALIDATION RESULTS")
-        print("="*60)
+    def _extract_score_from_outputs(self, outputs):
+        """Extract anomaly score from model outputs"""
+        try:
+            print(f"    Extracting score from outputs type: {type(outputs)}")
+            
+            # Handle different output types
+            if hasattr(outputs, 'pred_score'):
+                score = float(outputs.pred_score)
+                print(f"    Found pred_score attribute: {score}")
+                return score
+            elif hasattr(outputs, 'anomaly_score'):
+                score = float(outputs.anomaly_score)
+                print(f"    Found anomaly_score attribute: {score}")
+                return score
+            elif isinstance(outputs, dict):
+                print(f"    Dict keys: {list(outputs.keys())}")
+                
+                for key in ['pred_scores', 'anomaly_scores', 'pred_score', 'anomaly_score']:
+                    if key in outputs:
+                        value = outputs[key]
+                        print(f"    Found {key}: {type(value)}")
+                        
+                        if torch.is_tensor(value):
+                            element_count = value.numel()
+                            print(f"    Tensor elements: {element_count}")
+                            
+                            if element_count == 1:
+                                score = value.cpu().item()
+                                print(f"    Extracted score: {score}")
+                                return score
+                            elif element_count > 1:
+                                score = value.cpu().mean().item()
+                                print(f"    Extracted mean score: {score}")
+                                return score
+                        elif isinstance(value, (int, float)):
+                            score = float(value)
+                            print(f"    Direct numeric score: {score}")
+                            return score
+                
+                # Check all dict values for tensors
+                for key, value in outputs.items():
+                    if torch.is_tensor(value) and value.numel() == 1:
+                        score = value.cpu().item()
+                        print(f"    Found score in {key}: {score}")
+                        return score
+                        
+            elif torch.is_tensor(outputs):
+                element_count = outputs.numel()
+                print(f"    Direct tensor with {element_count} elements")
+                
+                if element_count == 1:
+                    score = outputs.cpu().item()
+                    print(f"    Single tensor score: {score}")
+                    return score
+                elif element_count > 1:
+                    score = outputs.cpu().mean().item()
+                    print(f"    Mean tensor score: {score}")
+                    return score
+            
+            print("    No score found, using default")
+            return 0.5
+            
+        except Exception as e:
+            print(f"    Error extracting score: {e}")
+            return 0.5
+    
+    def validate_on_test_data(self):
+        """Run validation on test data"""
+        print("\nRunning validation on test data...")
         
-        test_good = Path(test_good_dir)
-        test_defective = Path(test_defective_dir)
+        # Check test directories
+        test_good = Path("data/test/good")
+        test_defective = Path("data/test/defective")
         
-        # Collect test images
-        good_images = list(test_good.glob("*.jpg")) + list(test_good.glob("*.png"))
-        defective_images = list(test_defective.glob("*.jpg")) + list(test_defective.glob("*.png"))
-        
-        print(f"\nTest data:")
-        print(f"  Normal images: {len(good_images)}")
-        print(f"  Defective images: {len(defective_images)}")
-        
-        if len(good_images) == 0 and len(defective_images) == 0:
-            print("❌ No test images found!")
-            return
+        results = {"normal": [], "defective": []}
         
         # Process normal images
-        good_scores = []
-        if len(good_images) > 0:
-            print(f"\n📊 Processing normal images...")
-            for img_path in tqdm(good_images, desc="Normal"):
-                score = self.process_image(img_path)
+        if test_good.exists():
+            good_images = list(test_good.glob("*.jpg")) + list(test_good.glob("*.png"))
+            print(f"Found {len(good_images)} normal test images")
+            
+            for img_path in tqdm(good_images, desc="Normal images"):
+                score = self.test_single_image(img_path)
                 if score is not None:
-                    good_scores.append(score)
+                    results["normal"].append(score)
+        else:
+            print("No normal test directory found")
         
         # Process defective images
-        defective_scores = []
-        if len(defective_images) > 0:
-            print(f"\n📊 Processing defective images...")
-            for img_path in tqdm(defective_images, desc="Defective"):
-                score = self.process_image(img_path)
+        if test_defective.exists():
+            defective_images = list(test_defective.glob("*.jpg")) + list(test_defective.glob("*.png"))
+            print(f"Found {len(defective_images)} defective test images")
+            
+            for img_path in tqdm(defective_images, desc="Defective images"):
+                score = self.test_single_image(img_path)
                 if score is not None:
-                    defective_scores.append(score)
+                    results["defective"].append(score)
+        else:
+            print("No defective test directory found")
         
-        # Calculate statistics
+        # Calculate and display metrics
+        self._calculate_and_display_metrics(results)
+        
+        return results
+    
+    def _calculate_and_display_metrics(self, results):
+        """Calculate and display validation metrics"""
         print("\n" + "="*60)
-        print("📈 STATISTICS")
+        print("VALIDATION RESULTS")
         print("="*60)
         
-        if good_scores:
-            print(f"\n✅ Normal images (should have LOW scores):")
-            print(f"  Count: {len(good_scores)}")
-            print(f"  Mean score: {np.mean(good_scores):.4f}")
-            print(f"  Min score: {np.min(good_scores):.4f}")
-            print(f"  Max score: {np.max(good_scores):.4f}")
-            print(f"  Std dev: {np.std(good_scores):.4f}")
+        normal_scores = results["normal"]
+        defective_scores = results["defective"]
+        
+        if normal_scores:
+            print(f"\nNormal images ({len(normal_scores)} images):")
+            print(f"  Mean score: {np.mean(normal_scores):.4f}")
+            print(f"  Min score: {np.min(normal_scores):.4f}")
+            print(f"  Max score: {np.max(normal_scores):.4f}")
+            print(f"  Std dev: {np.std(normal_scores):.4f}")
         
         if defective_scores:
-            print(f"\n🔴 Defective images (should have HIGH scores):")
-            print(f"  Count: {len(defective_scores)}")
+            print(f"\nDefective images ({len(defective_scores)} images):")
             print(f"  Mean score: {np.mean(defective_scores):.4f}")
             print(f"  Min score: {np.min(defective_scores):.4f}")
             print(f"  Max score: {np.max(defective_scores):.4f}")
             print(f"  Std dev: {np.std(defective_scores):.4f}")
         
-        # Determine optimal threshold if not provided
-        if threshold is None and good_scores and defective_scores:
-            # Find threshold that best separates the two groups
-            all_scores = good_scores + defective_scores
-            all_labels = [0] * len(good_scores) + [1] * len(defective_scores)
+        # Calculate accuracy if both types available
+        if normal_scores and defective_scores:
+            # Auto-determine optimal threshold
+            all_scores = normal_scores + defective_scores
+            all_labels = [0] * len(normal_scores) + [1] * len(defective_scores)
             
             best_threshold = None
             best_accuracy = 0
             
-            for t in np.linspace(min(all_scores), max(all_scores), 100):
-                predictions = [1 if s > t else 0 for s in all_scores]
+            for threshold in np.linspace(min(all_scores), max(all_scores), 100):
+                predictions = [1 if s > threshold else 0 for s in all_scores]
                 accuracy = sum(p == l for p, l in zip(predictions, all_labels)) / len(all_labels)
                 
                 if accuracy > best_accuracy:
                     best_accuracy = accuracy
-                    best_threshold = t
+                    best_threshold = threshold
             
-            threshold = best_threshold
-            print(f"\n🎯 Optimal threshold: {threshold:.4f}")
-            print(f"  Accuracy at this threshold: {best_accuracy:.2%}")
-        elif threshold is None:
-            # Default threshold
-            threshold = 0.5
-            print(f"\n⚠️ Using default threshold: {threshold:.4f}")
-        
-        # Calculate performance metrics
-        if good_scores and defective_scores:
-            print("\n" + "="*60)
-            print("📊 PERFORMANCE METRICS")
-            print("="*60)
+            print(f"\nOptimal threshold: {best_threshold:.4f}")
+            print(f"Best accuracy: {best_accuracy:.2%}")
             
-            # True Positives: defective images correctly identified
-            tp = sum(1 for s in defective_scores if s > threshold)
-            # False Negatives: defective images missed
-            fn = len(defective_scores) - tp
-            # True Negatives: normal images correctly identified
-            tn = sum(1 for s in good_scores if s <= threshold)
-            # False Positives: normal images wrongly flagged
-            fp = len(good_scores) - tn
+            # Calculate metrics at optimal threshold
+            correct_normal = sum(1 for s in normal_scores if s <= best_threshold)
+            correct_defective = sum(1 for s in defective_scores if s > best_threshold)
+            total = len(normal_scores) + len(defective_scores)
             
-            # Calculate metrics
-            accuracy = (tp + tn) / (tp + tn + fp + fn) if (tp + tn + fp + fn) > 0 else 0
+            print(f"\nPerformance at optimal threshold:")
+            print(f"  Overall accuracy: {(correct_normal + correct_defective) / total:.2%}")
+            print(f"  Normal correct: {correct_normal}/{len(normal_scores)} ({correct_normal/len(normal_scores):.2%})")
+            print(f"  Defective correct: {correct_defective}/{len(defective_scores)} ({correct_defective/len(defective_scores):.2%})")
+            
+            # Calculate precision, recall, F1
+            tp = correct_defective
+            fp = len(normal_scores) - correct_normal
+            fn = len(defective_scores) - correct_defective
+            tn = correct_normal
+            
             precision = tp / (tp + fp) if (tp + fp) > 0 else 0
             recall = tp / (tp + fn) if (tp + fn) > 0 else 0
             f1 = 2 * (precision * recall) / (precision + recall) if (precision + recall) > 0 else 0
             
-            print(f"\nConfusion Matrix:")
-            print(f"                 Predicted")
-            print(f"              Normal  Defective")
-            print(f"Actual Normal    {tn:3d}      {fp:3d}")
-            print(f"      Defective  {fn:3d}      {tp:3d}")
-            
-            print(f"\nMetrics:")
-            print(f"  Accuracy:  {accuracy:.2%}")
-            print(f"  Precision: {precision:.2%}")
-            print(f"  Recall:    {recall:.2%}")
-            print(f"  F1 Score:  {f1:.2%}")
-            
-            # Interpretation
-            print("\n" + "="*60)
-            print("💡 INTERPRETATION")
-            print("="*60)
-            
-            if accuracy >= 0.9:
-                print("🎉 Excellent! Model is performing very well.")
-            elif accuracy >= 0.7:
-                print("✅ Good performance, but there's room for improvement.")
-            elif accuracy >= 0.5:
-                print("⚠️ Moderate performance. Consider:")
-                print("  - Adding more training data")
-                print("  - Adjusting the threshold")
-                print("  - Using a larger backbone model")
-            else:
-                print("❌ Poor performance. The model may need retraining.")
-            
-            if fp > tn:
-                print("\n⚠️ High false positive rate - too many normal parts flagged as defective")
-            if fn > tp:
-                print("\n⚠️ High false negative rate - missing too many defects")
+            print(f"\nDetailed metrics:")
+            print(f"  Precision: {precision:.3f}")
+            print(f"  Recall: {recall:.3f}")
+            print(f"  F1 Score: {f1:.3f}")
         
-        # Show example predictions
+        # Performance assessment
         print("\n" + "="*60)
-        print("📝 EXAMPLE PREDICTIONS")
+        print("PERFORMANCE ASSESSMENT")
         print("="*60)
         
-        if good_scores:
-            print("\nNormal images (first 5):")
-            for i, (img, score) in enumerate(zip(good_images[:5], good_scores[:5])):
-                pred = "✅ Correct" if score <= threshold else "❌ Wrong"
-                print(f"  {img.name}: score={score:.4f} {pred}")
-        
-        if defective_scores:
-            print("\nDefective images (first 5):")
-            for i, (img, score) in enumerate(zip(defective_images[:5], defective_scores[:5])):
-                pred = "✅ Correct" if score > threshold else "❌ Wrong"
-                print(f"  {img.name}: score={score:.4f} {pred}")
-        
-        return {
-            'good_scores': good_scores,
-            'defective_scores': defective_scores,
-            'threshold': threshold,
-            'accuracy': accuracy if good_scores and defective_scores else None
-        }
+        if not normal_scores and not defective_scores:
+            print("No test data found! Add test images to:")
+            print("  - data/test/good/ (normal images)")
+            print("  - data/test/defective/ (defective images)")
+        elif normal_scores and defective_scores:
+            if best_accuracy >= 0.9:
+                print("Excellent performance! Model is ready for deployment.")
+            elif best_accuracy >= 0.7:
+                print("Good performance, but room for improvement:")
+                print("  - Consider adding more training data")
+                print("  - Check image quality consistency")
+            else:
+                print("Poor performance. Consider:")
+                print("  - Adding more diverse training data")
+                print("  - Checking if defects are clearly visible")
+                print("  - Retraining the model")
+        else:
+            print("Need both normal and defective test images for full evaluation")
 
 def main():
-    """Main validation function"""
-    print("🔍 PatchCore Model Validation")
+    """Main function"""
+    print("Complete PatchCore Model Validation")
     print("="*60)
     
-    # Find model file
+    # Find model
     model_paths = [
-        "models/minimal/patchcore_minimal.pth",
-        #"models/working/patchcore_model.pth",
-        #"models/deployment/patchcore_deployment.pth",
-        #"models/saved_models/patchcore_model.pth",
+        "models/deployment/patchcore_deployment.pth",
+        "models/saved_models/patchcore_model.pth",
+        "models/saved_models/latest/patchcore_model.pth"
     ]
     
     model_path = None
@@ -300,28 +452,47 @@ def main():
             break
     
     if not model_path:
-        print("❌ No trained model found!")
-        print("Train a model first with: python train_minimal.py")
+        print("No model found! Available paths:")
+        for path in model_paths:
+            exists = "✓" if Path(path).exists() else "✗"
+            print(f"  {exists} {path}")
+        print("\nTrain a model first with: python train.py")
         return
     
-    print(f"Found model: {model_path}")
+    print(f"Using model: {model_path}")
     
     # Initialize validator
-    validator = PatchCoreValidator(model_path)
+    try:
+        validator = CompletePatchCoreValidator(model_path)
+    except Exception as e:
+        print(f"Failed to initialize validator: {e}")
+        return
     
-    # Validate on test data
-    results = validator.validate(
-        test_good_dir="data/test/good",
-        test_defective_dir="data/test/defective",
-        threshold=None  # Auto-determine threshold
-    )
+    # Test single image first
+    test_dirs = [Path("data/test/good"), Path("data/test/defective")]
+    test_image = None
     
-    print("\n" + "="*60)
-    print("✅ Validation complete!")
+    for test_dir in test_dirs:
+        if test_dir.exists():
+            images = list(test_dir.glob("*.jpg")) + list(test_dir.glob("*.png"))
+            if images:
+                test_image = images[0]
+                break
     
-    if results and results['accuracy'] is not None:
-        print(f"\nFinal accuracy: {results['accuracy']:.2%}")
-        print(f"Recommended threshold: {results['threshold']:.4f}")
+    if test_image:
+        print(f"\nTesting single image first: {test_image}")
+        score = validator.test_single_image(test_image)
+        
+        if score is not None:
+            print(f"Single image test successful! Score: {score:.4f}")
+            
+            # Run full validation
+            validator.validate_on_test_data()
+        else:
+            print("Single image test failed - check model and data")
+    else:
+        print("No test images found for validation")
+        print("Add test images to data/test/good/ and data/test/defective/")
 
 if __name__ == "__main__":
     main()
