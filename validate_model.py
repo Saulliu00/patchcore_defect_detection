@@ -132,70 +132,137 @@ class CompletePatchCoreValidator:
             print(f"  Error checking memory bank: {e}")
             return False
     
-    def rebuild_memory_bank(self):
-        """Rebuild memory bank from training data"""
+    def rebuild_memory_bank(self, coreset_sampling_ratio=0.1):
+        """Rebuild memory bank from training data with proper subsampling
+
+        Args:
+            coreset_sampling_ratio: Ratio of features to keep (default: 0.1)
+        """
         print("\nRebuilding memory bank from training data...")
-        
+
         # Check training data
         train_good = Path("data/train/good")
         if not train_good.exists():
             print(f"Training data directory not found: {train_good}")
             return False
-        
+
         image_files = list(train_good.glob("*.jpg")) + list(train_good.glob("*.png"))
         if len(image_files) == 0:
             print("No training images found!")
             return False
-        
+
         print(f"Found {len(image_files)} training images")
-        
+
         try:
-            # Set model to training mode
+            # Get the actual PyTorch model
+            torch_model = self._get_torch_model()
+
+            # CRITICAL FIX: Clear any existing embeddings and reset memory bank
+            if hasattr(torch_model, 'embedding_store'):
+                torch_model.embedding_store.clear()
+            if hasattr(torch_model, 'memory_bank'):
+                torch_model.memory_bank = torch.empty(0).to(self.device)
+
+            # Set model to training mode (embeddings will go to embedding_store)
             self.model.train()
-            
-            # Process training images
+
+            print("Processing training images (accumulating embeddings)...")
             processed_count = 0
             for img_path in tqdm(image_files, desc="Building memory bank"):
                 try:
                     # Load and preprocess image
                     image = Image.open(img_path).convert('RGB')
                     image_tensor = self.transform(image).unsqueeze(0).to(self.device)
-                    
-                    # Process through model (this populates memory bank)
+
+                    # Process through model (this populates embedding_store, NOT memory_bank)
                     with torch.no_grad():
                         _ = self.model(image_tensor)
-                    
+
                     processed_count += 1
-                    
+
                     # Check progress every 20 images
-                    if processed_count % 20 == 0:
-                        torch_model = self._get_torch_model()
-                        if hasattr(torch_model, 'memory_bank'):
-                            current_size = torch_model.memory_bank.numel()
-                            print(f"    Progress: {processed_count}/{len(image_files)}, Memory bank size: {current_size}")
-                    
+                    if processed_count % 20 == 0 and hasattr(torch_model, 'embedding_store'):
+                        embeddings_count = len(torch_model.embedding_store)
+                        print(f"    Progress: {processed_count}/{len(image_files)}, Embeddings accumulated: {embeddings_count}")
+
                 except Exception as e:
                     print(f"    Error processing {img_path.name}: {e}")
                     continue
-            
+
+            print(f"Processed {processed_count}/{len(image_files)} training images")
+
+            # CRITICAL FIX: Call subsample_embedding to finalize memory bank
+            print("\nFinalizing memory bank with coreset subsampling...")
+
+            if hasattr(torch_model, 'subsample_embedding'):
+                # Method 1: Use the model's subsample_embedding method
+                try:
+                    torch_model.subsample_embedding(coreset_sampling_ratio)
+                    print(f"✓ Called subsample_embedding with ratio={coreset_sampling_ratio}")
+                except Exception as e:
+                    print(f"  Error calling subsample_embedding: {e}")
+                    # Method 2: Manual consolidation as fallback
+                    self._manual_memory_bank_consolidation(torch_model, coreset_sampling_ratio)
+            else:
+                # Method 2: Manual consolidation
+                self._manual_memory_bank_consolidation(torch_model, coreset_sampling_ratio)
+
             # Set back to eval mode
             self.model.eval()
-            
-            print(f"Processed {processed_count}/{len(image_files)} training images")
-            
-            # Check final memory bank size
-            torch_model = self._get_torch_model()
+
+            # Verify final memory bank
             if hasattr(torch_model, 'memory_bank'):
                 final_size = torch_model.memory_bank.numel()
-                print(f"Final memory bank size: {final_size}")
+                final_shape = torch_model.memory_bank.shape if final_size > 0 else "empty"
+                print(f"\n✓ Memory bank finalized!")
+                print(f"  Shape: {final_shape}")
+                print(f"  Total elements: {final_size}")
                 return final_size > 0
             else:
-                print("Memory bank still not found after rebuild")
+                print("\n✗ Memory bank still not found after rebuild")
                 return False
-                
+
         except Exception as e:
-            print(f"Error rebuilding memory bank: {e}")
+            print(f"\n✗ Error rebuilding memory bank: {e}")
+            import traceback
+            print(f"  Traceback: {traceback.format_exc()}")
             return False
+
+    def _manual_memory_bank_consolidation(self, torch_model, sampling_ratio):
+        """Manually consolidate embeddings into memory bank with coreset sampling
+
+        This is a fallback when subsample_embedding is not available.
+        """
+        print("  Using manual memory bank consolidation...")
+
+        if not hasattr(torch_model, 'embedding_store') or len(torch_model.embedding_store) == 0:
+            print("  ✗ No embeddings in embedding_store to consolidate")
+            return
+
+        # Stack all embeddings
+        all_embeddings = torch.vstack(torch_model.embedding_store)
+        print(f"  Total embeddings: {all_embeddings.shape}")
+
+        # Apply coreset sampling (k-center greedy algorithm)
+        from sklearn.random_projection import SparseRandomProjection
+
+        num_samples = int(all_embeddings.shape[0] * sampling_ratio)
+        if num_samples < 1:
+            num_samples = min(100, all_embeddings.shape[0])
+
+        print(f"  Applying coreset sampling: {all_embeddings.shape[0]} → {num_samples} samples")
+
+        # Simple random sampling (faster than k-center greedy)
+        indices = torch.randperm(all_embeddings.shape[0])[:num_samples]
+        sampled_embeddings = all_embeddings[indices]
+
+        # Set memory bank
+        torch_model.memory_bank = sampled_embeddings.to(self.device)
+
+        # Clear embedding store
+        torch_model.embedding_store.clear()
+
+        print(f"  ✓ Memory bank shape: {torch_model.memory_bank.shape}")
     
     def test_single_image(self, image_path):
         """Test inference on a single image"""
