@@ -517,9 +517,9 @@ def main():
     # Find model (updated to match train.py output location)
     model_paths = [
         "models/minimal/patchcore_minimal.pth",  # train.py output location
-        "models/deployment/patchcore_deployment.pth",
-        "models/saved_models/patchcore_model.pth",
-        "models/saved_models/latest/patchcore_model.pth"
+    #    "models/deployment/patchcore_deployment.pth",
+    #    "models/saved_models/patchcore_model.pth",
+    #    "models/saved_models/latest/patchcore_model.pth"
     ]
     
     model_path = None

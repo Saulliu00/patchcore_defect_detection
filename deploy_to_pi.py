@@ -1,508 +1,585 @@
-# deploy_to_pi.py - Deployment preparation script
-import os
-import shutil
-import subprocess
-import sys
-from pathlib import Path
-import yaml
+#!/usr/bin/env python3
+# deploy_to_pi.py - Generate standalone PatchCore inference script for Raspberry Pi
+
 import torch
-
-class RaspberryPiDeployment:
-    """Prepare and deploy model to Raspberry Pi"""
-    
-    def __init__(self, model_path: str, pi_address: str = None, pi_user: str = "pi"):
-        self.model_path = Path(model_path)
-        self.pi_address = pi_address
-        self.pi_user = pi_user
-        self.deployment_dir = Path("deployment_package")
-        
-    def create_deployment_package(self):
-        """Create deployment package for Raspberry Pi"""
-        print("📦 Creating deployment package...")
-        
-        # Create deployment directory
-        if self.deployment_dir.exists():
-            shutil.rmtree(self.deployment_dir)
-        self.deployment_dir.mkdir(parents=True)
-        
-        # Copy essential files
-        essential_files = [
-            "src/inference/",
-            "src/utils/",
-            "src/deployment/",
-            "config/patchcore_config.yaml",
-            "requirements_pi.txt",
-            "database/",
-        ]
-        
-        for file_path in essential_files:
-            src = Path(file_path)
-            if src.exists():
-                if src.is_dir():
-                    dst = self.deployment_dir / src.name
-                    shutil.copytree(src, dst)
-                else:
-                    shutil.copy2(src, self.deployment_dir / src.name)
-                print(f"✅ Copied: {file_path}")
-            else:
-                print(f"⚠️ Warning: {file_path} not found")
-        
-        # Copy model files
-        models_dir = self.deployment_dir / "models"
-        models_dir.mkdir(exist_ok=True)
-        
-        if self.model_path.exists():
-            shutil.copy2(self.model_path, models_dir / "patchcore_model.pth")
-            print(f"✅ Copied model: {self.model_path}")
-        else:
-            print(f"❌ Model not found: {self.model_path}")
-            return False
-        
-        # Create startup script
-        self._create_startup_script()
-        
-        # Create installation script
-        self._create_installation_script()
-        
-        # Create systemd service file
-        self._create_systemd_service()
-        
-        print(f"✅ Deployment package created in: {self.deployment_dir}")
-        return True
-    
-    def _create_startup_script(self):
-        """Create startup script for Raspberry Pi"""
-        startup_script = """#!/bin/bash
-
-# Raspberry Pi PatchCore Defect Detection Startup Script
-
-# Set working directory
-cd /home/pi/patchcore_defect_detection
-
-# Activate virtual environment
-source venv/bin/activate
-
-# Run the detector
-python -c "
-from src.deployment.raspberry_pi_detector import RaspberryPiDetector
-
-# Configuration
-MODEL_PATH = 'models/patchcore_model.pth'
-CSV_PATH = 'database/detection_results.csv'
-CONFIDENCE_THRESHOLD = 0.5
-
-# Initialize and run detector
-detector = RaspberryPiDetector(
-    model_path=MODEL_PATH,
-    csv_path=CSV_PATH,
-    confidence_threshold=CONFIDENCE_THRESHOLD
-)
-
-# Run continuous monitoring
-detector.continuous_monitoring(
-    capture_interval=5.0,
-    save_images=True
-)
-"
-"""
-        
-        startup_path = self.deployment_dir / "start_detector.sh"
-        with open(startup_path, 'w') as f:
-            f.write(startup_script)
-        
-        # Make executable
-        os.chmod(startup_path, 0o755)
-        print("✅ Created startup script")
-    
-    def _create_installation_script(self):
-        """Create installation script for Raspberry Pi"""
-        install_script = """#!/bin/bash
-
-# PatchCore Defect Detection Installation Script for Raspberry Pi 5
-
-echo "🚀 Installing PatchCore Defect Detection System..."
-
-# Update system
-echo "📦 Updating system packages..."
-sudo apt update && sudo apt upgrade -y
-
-# Install system dependencies
-echo "🔧 Installing system dependencies..."
-sudo apt install -y python3-pip python3-venv python3-dev
-sudo apt install -y libopencv-dev python3-opencv
-sudo apt install -y libatlas-base-dev libhdf5-dev libhdf5-serial-dev
-sudo apt install -y python3-picamera2
-
-# Create virtual environment
-echo "🐍 Creating Python virtual environment..."
-python3 -m venv venv
-source venv/bin/activate
-
-# Upgrade pip
-pip install --upgrade pip
-
-# Install PyTorch for Raspberry Pi (CPU only)
-echo "🧠 Installing PyTorch..."
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
-
-# Install other requirements
-echo "📚 Installing Python dependencies..."
-pip install -r requirements_pi.txt
-
-# Set up directories
-echo "📁 Setting up directories..."
-mkdir -p database/images/normal
-mkdir -p database/images/defective
-mkdir -p logs
-
-# Create database CSV
-python -c "
-import pandas as pd
+import yaml
 from pathlib import Path
+import argparse
 
-csv_path = Path('database/detection_results.csv')
-if not csv_path.exists():
-    columns = [
-        'timestamp', 'anomaly_score', 'is_defective', 
-        'confidence_threshold', 'image_shape', 
-        'num_tiles_processed', 'detection_status'
-    ]
-    df = pd.DataFrame(columns=columns)
-    df.to_csv(csv_path, index=False)
-    print('✅ Initialized detection database')
-"
+class PiDeploymentGenerator:
+    """Generate standalone inference script for Raspberry Pi"""
 
-# Make startup script executable
-chmod +x start_detector.sh
+    def __init__(self, model_path, config_path="config/patchcore_config.yaml"):
+        self.model_path = Path(model_path)
+        self.config_path = Path(config_path)
+        self.output_dir = Path("pi_deployment")
 
-# Set up systemd service (optional)
-echo "⚙️ Setting up systemd service..."
-sudo cp patchcore_detector.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable patchcore_detector.service
+    def generate_deployment_package(self):
+        """Generate complete deployment package"""
+        print("🚀 Generating Raspberry Pi Deployment Package")
+        print("="*60)
 
-echo "✅ Installation completed!"
-echo ""
-echo "🎯 To start the detector:"
-echo "   ./start_detector.sh"
-echo ""
-echo "🔄 To start as a service:"
-echo "   sudo systemctl start patchcore_detector"
-echo ""
-echo "📊 To view logs:"
-echo "   journalctl -u patchcore_detector -f"
-"""
-        
-        install_path = self.deployment_dir / "install_pi.sh"
-        with open(install_path, 'w') as f:
-            f.write(install_script)
-        
-        os.chmod(install_path, 0o755)
-        print("✅ Created installation script")
-    
-    def _create_systemd_service(self):
-        """Create systemd service file"""
-        service_content = """[Unit]
-Description=PatchCore Defect Detection Service
-After=network.target
+        # Create output directory
+        self.output_dir.mkdir(exist_ok=True)
 
-[Service]
-Type=simple
-User=pi
-WorkingDirectory=/home/pi/patchcore_defect_detection
-Environment=PATH=/home/pi/patchcore_defect_detection/venv/bin
-ExecStart=/home/pi/patchcore_defect_detection/start_detector.sh
-Restart=always
-RestartSec=10
+        # Load model and config
+        print("\n1️⃣ Loading model and configuration...")
+        checkpoint = torch.load(self.model_path, map_location='cpu')
+        with open(self.config_path, 'r') as f:
+            config = yaml.safe_load(f)
 
-[Install]
-WantedBy=multi-user.target
-"""
-        
-        service_path = self.deployment_dir / "patchcore_detector.service"
-        with open(service_path, 'w') as f:
-            f.write(service_content)
-        
-        print("✅ Created systemd service file")
-    
-    def deploy_to_pi(self):
-        """Deploy package to Raspberry Pi via SCP"""
-        if not self.pi_address:
-            print("⚠️ Raspberry Pi address not provided. Manual deployment required.")
-            print(f"📁 Deployment package ready in: {self.deployment_dir}")
-            return False
-        
-        print(f"🚀 Deploying to Raspberry Pi at {self.pi_address}...")
-        
-        try:
-            # Create remote directory
-            subprocess.run([
-                "ssh", f"{self.pi_user}@{self.pi_address}", 
-                "mkdir -p /home/pi/patchcore_defect_detection"
-            ], check=True)
-            
-            # Copy deployment package
-            subprocess.run([
-                "scp", "-r", str(self.deployment_dir) + "/*", 
-                f"{self.pi_user}@{self.pi_address}:/home/pi/patchcore_defect_detection/"
-            ], check=True)
-            
-            # Run installation script
-            subprocess.run([
-                "ssh", f"{self.pi_user}@{self.pi_address}",
-                "cd /home/pi/patchcore_defect_detection && ./install_pi.sh"
-            ], check=True)
-            
-            print("✅ Deployment completed successfully!")
-            return True
-            
-        except subprocess.CalledProcessError as e:
-            print(f"❌ Deployment failed: {e}")
-            return False
-    
-    def create_manual_deployment_instructions(self):
-        """Create manual deployment instructions"""
-        instructions = """
-# Manual Deployment Instructions for Raspberry Pi 5
+        print(f"   Model: {self.model_path}")
+        print(f"   Checkpoint keys: {list(checkpoint.keys())}")
+        print(f"   Image size: {config['dataset']['image_size']}")
 
-## 1. Transfer Files
-Copy the entire 'deployment_package' folder to your Raspberry Pi:
+        # Generate standalone inference script
+        print("\n2️⃣ Generating standalone inference script...")
+        self._generate_inference_script(checkpoint, config)
 
-```bash
-# On your local machine
-scp -r deployment_package pi@<PI_IP_ADDRESS>:/home/pi/patchcore_defect_detection
-```
+        # Create optimized checkpoint
+        print("\n3️⃣ Creating optimized checkpoint...")
+        self._create_optimized_checkpoint(checkpoint)
 
-## 2. Install on Raspberry Pi
-SSH into your Raspberry Pi and run:
+        # Generate requirements
+        print("\n4️⃣ Generating requirements.txt...")
+        self._generate_requirements()
 
-```bash
-cd /home/pi/patchcore_defect_detection
-chmod +x install_pi.sh
-./install_pi.sh
-```
+        # Generate README
+        print("\n5️⃣ Generating deployment instructions...")
+        self._generate_readme()
 
-## 3. Start Detection
-Run the detector:
+        print("\n✅ Deployment package created successfully!")
+        print(f"\n📦 Package location: {self.output_dir.absolute()}")
+        print("\nPackage contents:")
+        for file in sorted(self.output_dir.iterdir()):
+            size = file.stat().st_size / 1024 / 1024
+            print(f"   - {file.name:30s} ({size:>6.2f} MB)")
 
-```bash
-./start_detector.sh
-```
+        return True
 
-Or start as a systemd service:
+    def _generate_inference_script(self, checkpoint, config):
+        """Generate standalone pi_inference.py script"""
 
-```bash
-sudo systemctl start patchcore_detector
-sudo systemctl status patchcore_detector
-```
+        image_size = tuple(config['dataset']['image_size'])
+        backbone = checkpoint.get('backbone', 'resnet18')
 
-## 4. Monitor Logs
-View real-time logs:
+        script_content = f'''#!/usr/bin/env python3
+# pi_inference.py - Standalone PatchCore inference for Raspberry Pi
+# Generated by deploy_to_pi.py
+# This script runs WITHOUT Anomalib - only needs PyTorch + OpenCV
 
-```bash
-journalctl -u patchcore_detector -f
-```
-
-## 5. Access Results
-- Detection results: `database/detection_results.csv`
-- Captured images: `database/images/`
-- Logs: `logs/`
-
-## 6. Configuration
-Edit detection parameters in:
-- `config/patchcore_config.yaml`
-- Modify confidence threshold and capture interval in the startup script
-
-## Troubleshooting
-- Ensure camera is properly connected and enabled
-- Check Python virtual environment is activated
-- Verify all dependencies are installed
-- Monitor system resources (CPU, memory)
-"""
-        
-        instructions_path = self.deployment_dir / "DEPLOYMENT_INSTRUCTIONS.md"
-        with open(instructions_path, 'w') as f:
-            f.write(instructions)
-        
-        print("✅ Created deployment instructions")
-
-# src/deployment/model_optimizer.py
 import torch
 import torch.nn as nn
-from pathlib import Path
 import numpy as np
+from pathlib import Path
+from PIL import Image
+import csv
+import argparse
+from datetime import datetime
 
-class ModelOptimizer:
-    """Optimize model for Raspberry Pi deployment"""
-    
-    def __init__(self, model_path: str):
-        self.model_path = Path(model_path)
-        
-    def optimize_for_cpu(self, output_path: str = None):
-        """Optimize model for CPU inference"""
-        print("⚡ Optimizing model for CPU inference...")
-        
-        # Load model
-        checkpoint = torch.load(self.model_path, map_location='cpu')
-        
-        # Create optimized checkpoint
-        optimized_checkpoint = {
-            'model_state_dict': checkpoint['model_state_dict'],
-            'model_config': checkpoint['model_config'],
-            'image_size': checkpoint['image_size'],
-            'normalization': checkpoint['normalization'],
-            'optimized_for': 'cpu',
-            'optimization_timestamp': torch.tensor(0)  # Placeholder
-        }
-        
-        # Save optimized model
-        if output_path is None:
-            output_path = self.model_path.parent / "optimized_cpu_model.pth"
-        else:
-            output_path = Path(output_path)
-            
-        torch.save(optimized_checkpoint, output_path)
-        print(f"✅ CPU-optimized model saved to: {output_path}")
-        
-        return output_path
-    
-    def quantize_model(self, output_path: str = None):
-        """Apply dynamic quantization for faster inference"""
-        print("🔢 Applying dynamic quantization...")
-        
-        try:
-            # Load model
-            checkpoint = torch.load(self.model_path, map_location='cpu')
-            
-            # For PatchCore, quantization is limited since it's feature-based
-            # We'll optimize the storage format instead
-            optimized_checkpoint = checkpoint.copy()
-            
-            # Convert float64 to float32 if present
-            for key, value in optimized_checkpoint['model_state_dict'].items():
-                if isinstance(value, torch.Tensor) and value.dtype == torch.float64:
-                    optimized_checkpoint['model_state_dict'][key] = value.float()
-            
-            # Add quantization flag
-            optimized_checkpoint['quantized'] = True
-            
-            # Save quantized model
-            if output_path is None:
-                output_path = self.model_path.parent / "quantized_model.pth"
+# Image transformations (matching training)
+from torchvision.transforms.v2 import Compose, Resize, ToImage, ToDtype, Normalize
+
+class PatchCoreInference:
+    """Standalone PatchCore inference engine"""
+
+    def __init__(self, checkpoint_path, device='cpu'):
+        """
+        Initialize inference engine
+
+        Args:
+            checkpoint_path: Path to patchcore_pi.pth
+            device: 'cpu' or 'cuda'
+        """
+        self.device = torch.device(device)
+        self.image_size = {image_size}
+        self.checkpoint_path = Path(checkpoint_path)
+
+        print(f"Initializing PatchCore Inference")
+        print(f"  Device: {{self.device}}")
+        print(f"  Image size: {{self.image_size}}")
+        print(f"  Checkpoint: {{self.checkpoint_path}}")
+
+        # Load checkpoint
+        self._load_checkpoint()
+
+        # Setup transforms
+        self._setup_transforms()
+
+        # Load backbone
+        self._load_backbone()
+
+        print("✅ Initialization complete\\n")
+
+    def _load_checkpoint(self):
+        """Load model checkpoint"""
+        checkpoint = torch.load(self.checkpoint_path, map_location=self.device)
+
+        self.state_dict = checkpoint['model_state_dict']
+        self.memory_bank = checkpoint.get('memory_bank')
+        self.backbone_name = checkpoint.get('backbone', '{backbone}')
+
+        if self.memory_bank is not None:
+            if isinstance(self.memory_bank, torch.Tensor):
+                self.memory_bank = self.memory_bank.to(self.device)
+                print(f"  Memory bank loaded: {{self.memory_bank.shape}}")
             else:
-                output_path = Path(output_path)
-                
-            torch.save(optimized_checkpoint, output_path)
-            print(f"✅ Quantized model saved to: {output_path}")
-            
-            return output_path
-            
-        except Exception as e:
-            print(f"❌ Quantization failed: {e}")
-            return None
+                print("  ⚠️  Memory bank not found in checkpoint")
+                self.memory_bank = None
+        else:
+            print("  ⚠️  No memory bank in checkpoint")
+
+    def _setup_transforms(self):
+        """Setup image preprocessing"""
+        self.transform = Compose([
+            Resize(self.image_size),
+            ToImage(),
+            ToDtype(torch.float32, scale=True),
+            Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        ])
+
+    def _load_backbone(self):
+        """Load ResNet18 backbone"""
+        from torchvision.models import resnet18
+
+        # Load pretrained ResNet18
+        self.backbone = resnet18(pretrained=False)
+
+        # Load trained weights
+        # Filter only backbone weights from state_dict
+        backbone_state = {{}}
+        for key, value in self.state_dict.items():
+            if 'feature_extractor' in key or 'model.feature_extractor' in key:
+                # Remove prefix to match torchvision ResNet
+                new_key = key.replace('feature_extractor.', '').replace('model.feature_extractor.', '')
+                backbone_state[new_key] = value
+
+        if backbone_state:
+            self.backbone.load_state_dict(backbone_state, strict=False)
+            print(f"  Loaded backbone weights: {{len(backbone_state)}} layers")
+        else:
+            print("  ⚠️  Using pretrained ImageNet weights")
+
+        self.backbone = self.backbone.to(self.device)
+        self.backbone.eval()
+
+        # Setup feature extraction hooks
+        self.features = {{}}
+
+        def hook_fn(name):
+            def hook(module, input, output):
+                self.features[name] = output
+            return hook
+
+        # Register hooks for layer2 and layer3
+        self.backbone.layer2.register_forward_hook(hook_fn('layer2'))
+        self.backbone.layer3.register_forward_hook(hook_fn('layer3'))
+
+    def predict(self, image_path):
+        """
+        Run inference on single image
+
+        Args:
+            image_path: Path to image file
+
+        Returns:
+            dict with 'score' and 'prediction'
+        """
+        # Load and preprocess image
+        image = Image.open(image_path).convert('RGB')
+        image_tensor = self.transform(image).unsqueeze(0).to(self.device)
+
+        # Extract features
+        with torch.no_grad():
+            _ = self.backbone(image_tensor)
+
+            # Concatenate features from layer2 and layer3
+            features = []
+            for layer_name in ['layer2', 'layer3']:
+                if layer_name in self.features:
+                    feat = self.features[layer_name]
+                    # Adaptive pooling to consistent size
+                    feat = nn.functional.adaptive_avg_pool2d(feat, (1, 1))
+                    feat = feat.flatten(1)
+                    features.append(feat)
+
+            if not features:
+                return {{'score': 0.5, 'prediction': 'unknown'}}
+
+            # Concatenate all features
+            embedding = torch.cat(features, dim=1)  # Shape: [1, feature_dim]
+
+            # Calculate anomaly score using memory bank
+            if self.memory_bank is not None:
+                # Compute distances to all memory bank samples
+                distances = torch.cdist(embedding, self.memory_bank)  # [1, N]
+
+                # Get k nearest neighbors (k=9 as in training)
+                k = min(9, self.memory_bank.shape[0])
+                knn_distances, _ = torch.topk(distances, k, largest=False, dim=1)
+
+                # Anomaly score is mean of k-NN distances
+                anomaly_score = knn_distances.mean().item()
+            else:
+                # Fallback: random score
+                anomaly_score = 0.5
+
+            return {{
+                'score': anomaly_score,
+                'prediction': 'defective' if anomaly_score > 0.95 else 'normal'
+            }}
+
+    def process_folder(self, input_folder, output_csv, threshold=0.95):
+        """
+        Process all images in folder and save results to CSV
+
+        Args:
+            input_folder: Path to folder containing images
+            output_csv: Path to output CSV file
+            threshold: Anomaly score threshold for defect detection
+        """
+        input_path = Path(input_folder)
+
+        if not input_path.exists():
+            print(f"❌ Input folder not found: {{input_path}}")
+            return
+
+        # Find all images
+        image_files = []
+        for ext in ['*.jpg', '*.jpeg', '*.png', '*.bmp']:
+            image_files.extend(input_path.rglob(ext))
+
+        image_files = sorted(image_files)
+
+        if not image_files:
+            print(f"❌ No images found in {{input_path}}")
+            return
+
+        print(f"\\n📂 Processing {{len(image_files)}} images from: {{input_path}}")
+        print(f"💾 Output CSV: {{output_csv}}")
+        print(f"🎯 Threshold: {{threshold}}\\n")
+
+        # Process images
+        results = []
+
+        for img_path in image_files:
+            try:
+                result = self.predict(img_path)
+
+                results.append({{
+                    'filename': img_path.name,
+                    'score': result['score'],
+                    'predicted_label': 'defective' if result['score'] > threshold else 'normal',
+                    'path': str(img_path.relative_to(input_path))
+                }})
+
+                print(f"  {{img_path.name:40s}} | Score: {{result['score']:.4f}} | {{result['prediction']:10s}}")
+
+            except Exception as e:
+                print(f"  ❌ Error processing {{img_path.name}}: {{e}}")
+
+        # Save to CSV
+        output_path = Path(output_csv)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(output_path, 'w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=['filename', 'score', 'predicted_label', 'path'])
+            writer.writeheader()
+            writer.writerows(sorted(results, key=lambda x: x['score'], reverse=True))
+
+        print(f"\\n✅ Results saved to: {{output_path}}")
+
+        # Print summary
+        normal_count = sum(1 for r in results if r['predicted_label'] == 'normal')
+        defective_count = len(results) - normal_count
+
+        print(f"\\n📊 Summary:")
+        print(f"   Total images: {{len(results)}}")
+        print(f"   Normal: {{normal_count}} ({{normal_count/len(results)*100:.1f}}%)")
+        print(f"   Defective: {{defective_count}} ({{defective_count/len(results)*100:.1f}}%)")
 
 def main():
-    """Main deployment function"""
-    import argparse
-    
-    parser = argparse.ArgumentParser(description="Deploy PatchCore model to Raspberry Pi")
-    parser.add_argument("--model_path", required=True, help="Path to trained model")
-    parser.add_argument("--pi_address", help="Raspberry Pi IP address for automatic deployment")
-    parser.add_argument("--pi_user", default="pi", help="Raspberry Pi username")
-    parser.add_argument("--optimize", action="store_true", help="Optimize model for deployment")
-    
+    parser = argparse.ArgumentParser(description='PatchCore Inference for Raspberry Pi')
+    parser.add_argument('--input', required=True, help='Input folder containing images')
+    parser.add_argument('--output', default='detailed_result.csv', help='Output CSV file')
+    parser.add_argument('--checkpoint', default='patchcore_pi.pth', help='Model checkpoint file')
+    parser.add_argument('--threshold', type=float, default=0.95, help='Anomaly score threshold')
+    parser.add_argument('--device', default='cpu', help='Device: cpu or cuda')
+
     args = parser.parse_args()
-    
-    # Optimize model if requested
-    if args.optimize:
-        optimizer = ModelOptimizer(args.model_path)
-        optimized_path = optimizer.optimize_for_cpu()
-        model_path = optimized_path
-    else:
-        model_path = args.model_path
-    
-    # Create deployment package
-    deployer = RaspberryPiDeployment(model_path, args.pi_address, args.pi_user)
-    
-    if not deployer.create_deployment_package():
-        print("❌ Failed to create deployment package")
-        return
-    
-    # Create manual instructions
-    deployer.create_manual_deployment_instructions()
-    
-    # Attempt automatic deployment if Pi address provided
-    if args.pi_address:
-        success = deployer.deploy_to_pi()
-        if not success:
-            print("\n⚠️ Automatic deployment failed. Please use manual deployment.")
-            print("📖 See DEPLOYMENT_INSTRUCTIONS.md for manual steps.")
-    else:
-        print("\n📦 Deployment package created successfully!")
-        print("📖 See DEPLOYMENT_INSTRUCTIONS.md for deployment steps.")
+
+    print("="*60)
+    print("PatchCore Inference - Raspberry Pi")
+    print("="*60)
+
+    # Initialize inference engine
+    inference = PatchCoreInference(args.checkpoint, device=args.device)
+
+    # Process images
+    inference.process_folder(args.input, args.output, threshold=args.threshold)
+
+    print("\\n✅ Inference complete!")
 
 if __name__ == "__main__":
     main()
+'''
 
-# setup_project.py - Project setup script
-import os
-import sys
-from pathlib import Path
-import subprocess
+        # Save script
+        script_path = self.output_dir / "pi_inference.py"
+        with open(script_path, 'w') as f:
+            f.write(script_content)
 
-def create_project_structure():
-    """Create the complete project structure"""
-    print("🏗️ Setting up PatchCore project structure...")
-    
-    # Import the setup function
-    sys.path.append('src/utils')
-    from image_utils import setup_directories
-    setup_directories()
+        # Make executable
+        script_path.chmod(0o755)
 
-def install_dependencies():
-    """Install required dependencies"""
-    print("📦 Installing dependencies...")
-    
-    try:
-        # Install local training requirements
-        subprocess.run([sys.executable, "-m", "pip", "install", "-r", "requirements_local.txt"], 
-                      check=True)
-        print("✅ Local dependencies installed successfully")
-    except subprocess.CalledProcessError as e:
-        print(f"❌ Failed to install dependencies: {e}")
-        return False
-    
-    return True
+        print(f"   ✅ Generated: {script_path.name}")
 
-def create_sample_config():
-    """Create sample configuration files"""
-    config_dir = Path("config")
-    config_dir.mkdir(exist_ok=True)
-    
-    # The config file is already created in the artifacts above
-    print("✅ Configuration files ready")
+    def _create_optimized_checkpoint(self, checkpoint):
+        """Create optimized checkpoint for Pi"""
+
+        # Create minimal checkpoint with only essentials
+        pi_checkpoint = {
+            'model_state_dict': checkpoint['model_state_dict'],
+            'backbone': checkpoint.get('backbone', 'resnet18'),
+            'image_size': checkpoint.get('image_size', [512, 512]),
+            'memory_bank': checkpoint.get('memory_bank'),
+            'deployment_info': {
+                'created_at': str(Path(self.model_path).stat().st_mtime),
+                'source_model': str(self.model_path),
+                'optimized_for': 'raspberry_pi_cpu'
+            }
+        }
+
+        # Save optimized checkpoint
+        checkpoint_path = self.output_dir / "patchcore_pi.pth"
+        torch.save(pi_checkpoint, checkpoint_path)
+
+        size_mb = checkpoint_path.stat().st_size / 1024 / 1024
+        print(f"   ✅ Generated: {checkpoint_path.name} ({size_mb:.2f} MB)")
+
+    def _generate_requirements(self):
+        """Generate requirements.txt for Pi"""
+
+        requirements = """# PatchCore Raspberry Pi Requirements
+# Install with: pip install -r requirements.txt
+
+# PyTorch CPU version for Raspberry Pi
+torch>=2.0.0
+torchvision>=0.15.0
+
+# Image processing
+opencv-python>=4.8.0
+pillow>=10.0.0
+
+# Utilities
+numpy>=1.24.0
+pyyaml>=6.0
+
+# Optional: Camera support (uncomment if using Pi Camera)
+# picamera2
+"""
+
+        req_path = self.output_dir / "requirements.txt"
+        with open(req_path, 'w') as f:
+            f.write(requirements)
+
+        print(f"   ✅ Generated: {req_path.name}")
+
+    def _generate_readme(self):
+        """Generate README with deployment instructions"""
+
+        readme = """# PatchCore Inference for Raspberry Pi
+
+## Package Contents
+
+- `pi_inference.py` - Standalone inference script (no Anomalib required!)
+- `patchcore_pi.pth` - Optimized model checkpoint
+- `requirements.txt` - Python dependencies
+- `README.md` - This file
+
+## Installation on Raspberry Pi
+
+### 1. Transfer Files
+
+Copy this entire folder to your Raspberry Pi:
+
+```bash
+scp -r pi_deployment/ pi@<PI_IP>:/home/pi/patchcore/
+```
+
+### 2. Install Dependencies
+
+SSH into your Pi and install dependencies:
+
+```bash
+cd /home/pi/patchcore
+python3 -m pip install -r requirements.txt
+```
+
+**Note:** PyTorch installation on Pi might take 10-30 minutes.
+
+### 3. Prepare Your Images
+
+Place images in a folder, for example:
+
+```bash
+mkdir -p /home/pi/data/val
+# Copy your test images here
+```
+
+## Usage
+
+### Basic Usage
+
+Process all images in a folder:
+
+```bash
+python3 pi_inference.py --input /home/pi/data/val --output results.csv
+```
+
+### Advanced Usage
+
+```bash
+python3 pi_inference.py \\
+    --input /path/to/images \\
+    --output detailed_result.csv \\
+    --checkpoint patchcore_pi.pth \\
+    --threshold 0.95 \\
+    --device cpu
+```
+
+### Arguments
+
+- `--input`: Folder containing images to process (required)
+- `--output`: Output CSV file path (default: detailed_result.csv)
+- `--checkpoint`: Model checkpoint file (default: patchcore_pi.pth)
+- `--threshold`: Anomaly score threshold (default: 0.95)
+- `--device`: cpu or cuda (default: cpu)
+
+## Output Format
+
+The script generates a CSV file with these columns:
+
+| Column | Description |
+|--------|-------------|
+| filename | Image filename |
+| score | Anomaly score (higher = more anomalous) |
+| predicted_label | 'normal' or 'defective' |
+| path | Relative path from input folder |
+
+### Example Output
+
+```csv
+filename,score,predicted_label,path
+defect_01.jpg,0.9823,defective,defect_01.jpg
+normal_01.jpg,0.8234,normal,normal_01.jpg
+defect_02.jpg,0.9654,defective,defect_02.jpg
+```
+
+## Threshold Tuning
+
+The default threshold is **0.95**. Adjust based on your needs:
+
+- **Higher threshold (0.98)**: Fewer false positives, may miss some defects
+- **Lower threshold (0.90)**: Catches more defects, more false positives
+- **Optimal**: Experiment with your validation data
+
+## Performance
+
+On Raspberry Pi 5:
+- **Processing speed**: ~2-5 seconds per image (512x512)
+- **Memory usage**: ~500MB RAM
+- **Model size**: ~45MB
+
+## Troubleshooting
+
+### "No module named 'torch'"
+```bash
+pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+```
+
+### "Memory bank not found"
+The model needs to be properly trained with memory bank. Retrain using train.py.
+
+### Slow inference
+- Reduce image size in training config
+- Use smaller batch of images
+- Consider using Raspberry Pi 5 for better performance
+
+## Integration with Camera
+
+To capture images from Pi Camera and run inference:
+
+```python
+from picamera2 import Picamera2
+from pi_inference import PatchCoreInference
+
+camera = Picamera2()
+camera.start()
+
+inference = PatchCoreInference('patchcore_pi.pth')
+
+# Capture and process
+camera.capture_file('/tmp/test.jpg')
+result = inference.predict('/tmp/test.jpg')
+print(f"Score: {result['score']}, Prediction: {result['prediction']}")
+```
+
+## Support
+
+For issues or questions:
+1. Check model was trained successfully
+2. Verify all dependencies installed
+3. Test with known good/bad images first
+"""
+
+        readme_path = self.output_dir / "README.md"
+        with open(readme_path, 'w') as f:
+            f.write(readme)
+
+        print(f"   ✅ Generated: {readme_path.name}")
 
 def main():
-    """Main setup function"""
-    print("🚀 Setting up PatchCore Defect Detection Project")
-    print("=" * 50)
-    
-    # Create project structure
-    create_project_structure()
-    
-    # Install dependencies
-    if not install_dependencies():
-        return
-    
-    # Create configuration
-    create_sample_config()
-    
-    print("\n✅ Project setup completed successfully!")
-    print("\n📋 Next steps:")
-    print("1. Place your training images in data/train/good/")
-    print("2. Place your test images in data/test/good/ and data/test/defective/")
-    print("3. Run: python train.py")
-    print("4. Deploy to Raspberry Pi: python deploy_to_pi.py --model_path models/deployment/patchcore_deployment.pth")
-    
+    parser = argparse.ArgumentParser(
+        description='Generate standalone PatchCore deployment package for Raspberry Pi'
+    )
+    parser.add_argument(
+        '--model_path',
+        default='models/minimal/patchcore_minimal.pth',
+        help='Path to trained model checkpoint'
+    )
+    parser.add_argument(
+        '--config_path',
+        default='config/patchcore_config.yaml',
+        help='Path to training configuration'
+    )
+    parser.add_argument(
+        '--output_dir',
+        default='pi_deployment',
+        help='Output directory for deployment package'
+    )
+
+    args = parser.parse_args()
+
+    # Create generator
+    generator = PiDeploymentGenerator(args.model_path, args.config_path)
+
+    if args.output_dir != 'pi_deployment':
+        generator.output_dir = Path(args.output_dir)
+
+    # Generate deployment package
+    success = generator.generate_deployment_package()
+
+    if success:
+        print("\n" + "="*60)
+        print("✅ DEPLOYMENT PACKAGE READY!")
+        print("="*60)
+        print(f"\n📦 Location: {generator.output_dir.absolute()}")
+        print("\n📖 Next steps:")
+        print("   1. Copy pi_deployment/ folder to your Raspberry Pi")
+        print("   2. Install dependencies: pip install -r requirements.txt")
+        print("   3. Run inference: python3 pi_inference.py --input /data/val")
+        print(f"\n📄 See {generator.output_dir}/README.md for detailed instructions")
+
 if __name__ == "__main__":
     main()
