@@ -1,13 +1,17 @@
-# requirements_local.txt - Simplified version for better compatibility
-# Install PyTorch first with CUDA support:
-# pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+# requirements_local.txt - Local training dependencies for RTX 3080 Ti
+#
+# Installation:
+# 1. Install PyTorch with CUDA support first:
+#    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+# 2. Then install these dependencies:
+#    pip install -r requirements_local.txt
 
 # Core anomaly detection library
 anomalib>=1.0.0
 
-# Computer vision
-opencv-python>=4.8.0
-opencv-python-headless>=4.8.0
+# Computer vision (choose ONE - not both!)
+opencv-python>=4.8.0          # Use this for systems with display (recommended)
+# opencv-python-headless>=4.8.0  # Uncomment for headless servers, comment out opencv-python above
 
 # Data processing
 numpy>=1.24.0,<2.0.0
@@ -16,25 +20,18 @@ Pillow>=10.0.0
 
 # Visualization
 matplotlib>=3.7.0
-seaborn>=0.12.0
 
 # Machine learning
 scikit-learn>=1.3.0
-scipy>=1.10.0
 
-# Image augmentation
-albumentations>=1.3.0
-
-# Deep learning framework
+# Deep learning framework (lightning is the new name for pytorch-lightning)
 lightning>=2.0.0
-pytorch-lightning>=2.0.0
 
 # Configuration
 omegaconf>=2.3.0
 pyyaml>=6.0
 
 # Utilities
-rich>=13.0.0
 tqdm>=4.65.0
 
 # Monitoring
@@ -46,6 +43,12 @@ torchmetrics>=1.0.0
 # Pretrained models
 timm>=0.9.0
 
-# Additional dependencies that might be needed
-jsonargparse>=4.20.0
-docstring-parser>=0.15
+# Note: The following dependencies were removed as unused:
+# - opencv-python-headless (duplicate of opencv-python)
+# - pytorch-lightning (deprecated, use 'lightning' instead)
+# - albumentations (only used in unused data_loader.py)
+# - seaborn (minimal usage, matplotlib is sufficient)
+# - scipy (not imported anywhere)
+# - rich (not imported anywhere)
+# - jsonargparse (not imported anywhere)
+# - docstring-parser (not imported anywhere)

@@ -13,16 +13,16 @@ model:
 dataset:
   name: folder
   format: folder
-  
+
   # Root path for training data
   root: ./data
-  
+
   # Directory names
   normal_dir: good        # Contains normal/good samples
   abnormal_dir: defective # Not used during training, only for testing
-  
+
   task: segmentation
-  image_size: [256, 256]  # Adjust based on your GPU memory
+  image_size: [512, 512]  # Higher resolution for better defect detection
   center_crop: null
   normalization: imagenet
   
@@ -66,8 +66,8 @@ logging:
 
 tiling:
   apply: true
-  tile_size: [256, 256]
-  stride: [128, 128]  # 50% overlap
+  tile_size: [512, 512]  # Match image_size
+  stride: [256, 256]  # 50% overlap
   remove_border_count: 0
   mode: padding
 

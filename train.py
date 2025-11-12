@@ -1,26 +1,40 @@
 #!/usr/bin/env python3
-# train_minimal.py - Minimal training script that avoids callback conflicts
+# train.py - Minimal PatchCore training script that avoids callback conflicts
 
 import os
 import sys
 from pathlib import Path
 import torch
 import numpy as np
+import yaml
 import warnings
 warnings.filterwarnings("ignore")
+warnings.filterwarnings("ignore", message=".*FeatureExtractor is deprecated.*")
+
+def load_config(config_path="config/patchcore_config.yaml"):
+    """Load configuration from YAML file"""
+    with open(config_path, 'r') as f:
+        config = yaml.safe_load(f)
+    return config
 
 def train_patchcore_minimal():
     """Minimal PatchCore training without complex callbacks"""
     print("🚀 Minimal PatchCore Training")
     print("=" * 60)
-    
+
+    # Load configuration
+    print("\n📋 Loading configuration...")
+    config = load_config()
+    image_size = tuple(config['dataset']['image_size'])
+    print(f"  Image size: {image_size}")
+
     # Check environment
-    print("Environment:")
+    print("\nEnvironment:")
     print(f"  PyTorch: {torch.__version__}")
     print(f"  CUDA: {torch.cuda.is_available()}")
     if torch.cuda.is_available():
         print(f"  GPU: {torch.cuda.get_device_name(0)}")
-    
+
     # Check data
     train_good = Path("data/train/good")
     if not train_good.exists():
@@ -40,11 +54,23 @@ def train_patchcore_minimal():
     try:
         from anomalib.models import Patchcore
         from anomalib.data import Folder
-        import lightning.pytorch as pl
-        
+        import lightning.pytorch as pl  # Use Lightning 2.x with Anomalib 2.x
+
         print("\n📦 Creating model and data...")
-        
-        # 1. Create model with smaller backbone for testing
+
+        # Import transforms for image resizing (Anomalib 2.x)
+        from torchvision.transforms.v2 import Compose, Resize, ToImage, ToDtype, Normalize
+        import torch as torch_module
+
+        # Create transform for image resizing (replaces old image_size parameter)
+        transform = Compose([
+            Resize(image_size),  # Resize to size from config
+            ToImage(),  # Convert to tensor image
+            ToDtype(torch_module.float32, scale=True),  # Convert to float32 and scale
+            Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])  # ImageNet normalization
+        ])
+
+        # 1. Create model (Anomalib 2.x - no input_size parameter)
         model = Patchcore(
             backbone="resnet18",  # Smaller model
             layers=["layer2", "layer3"],
@@ -52,17 +78,20 @@ def train_patchcore_minimal():
             coreset_sampling_ratio=0.1,
             num_neighbors=9
         )
-        
-        # 2. Create datamodule with minimal parameters
+
+        # 2. Create datamodule (Anomalib 2.x API)
         datamodule = Folder(
-            name="custom",  # Add required name parameter
-            root=Path("data/train").absolute(),
-            normal_dir="good",
-            abnormal_dir="defective",
-            #image_size=(256, 256),  # Smaller size for testing
+            name="custom",  # Required in Anomalib 2.x
+            normal_dir=Path("data/train/good").absolute(),  # Training normal images
+            root=None,  # Not using root-based structure
+            abnormal_dir=None,  # No abnormal training data
+            normal_test_dir=Path("data/test/good").absolute(),  # Test normal images
             train_batch_size=1,  # Small batch size
             eval_batch_size=1,
             num_workers=0,  # No multiprocessing
+            augmentations=transform,  # Image resizing via transforms
+            test_split_mode="from_dir",  # Use separate test directory
+            val_split_mode="same_as_test",  # Use test data for validation
         )
         
         # Setup datamodule
@@ -107,7 +136,7 @@ def train_patchcore_minimal():
         model_dict = {
             'model_state_dict': model.state_dict(),
             'backbone': 'resnet18',
-            #'image_size': [256, 256],
+            'image_size': list(image_size),  # Loaded from config
         }
         
         # Try to save memory bank if it exists

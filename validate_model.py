@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-# validate_model_complete.py - Complete fixed PatchCore validation
+# validate_model.py - PatchCore validation with Anomalib 2.x compatibility
 
 import torch
 import numpy as np
 from pathlib import Path
 from PIL import Image
-from torchvision import transforms
 from tqdm import tqdm
+import yaml
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -17,17 +17,24 @@ if torch.cuda.is_available():
 
 class CompletePatchCoreValidator:
     """Complete PatchCore validator with memory bank handling"""
-    
-    def __init__(self, model_path, device=None):
+
+    def __init__(self, model_path, device=None, config_path="config/patchcore_config.yaml"):
         self.model_path = Path(model_path)
         self.device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model = None
         self.transform = None
-        
+
+        # Load configuration for image size
+        print(f"Loading configuration from {config_path}...")
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+        self.image_size = tuple(config['dataset']['image_size'])
+        print(f"  Image size from config: {self.image_size}")
+
         print(f"Initializing validator...")
         print(f"  Model path: {self.model_path}")
         print(f"  Device: {self.device}")
-        
+
         # Step by step initialization
         self._load_and_setup_model()
         self._setup_transforms()
@@ -47,13 +54,13 @@ class CompletePatchCoreValidator:
             print(f"Checkpoint loaded successfully")
             print(f"  Checkpoint keys: {list(checkpoint.keys())}")
             
-            # Get model configuration
+            # Get model configuration (match train.py defaults)
             if 'model_config' in checkpoint:
                 config = checkpoint['model_config']
             else:
-                # Default configuration
+                # Default configuration matching train.py
                 config = {
-                    'backbone': checkpoint.get('backbone', 'wide_resnet50_2'),
+                    'backbone': checkpoint.get('backbone', 'resnet18'),  # Match train.py
                     'layers': checkpoint.get('layers', ['layer2', 'layer3']),
                     'coreset_sampling_ratio': 0.1,
                     'num_neighbors': 9
@@ -88,15 +95,17 @@ class CompletePatchCoreValidator:
             raise
     
     def _setup_transforms(self):
-        """Setup image transformations without resizing"""
-        self.transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize(
-                mean=[0.485, 0.456, 0.406],
-                std=[0.229, 0.224, 0.225]
-            )
+        """Setup image transformations matching train.py (Anomalib 2.x compatible)"""
+        from torchvision.transforms.v2 import Compose, Resize, ToImage, ToDtype, Normalize
+        import torch as torch_module
+
+        self.transform = Compose([
+            Resize(self.image_size),  # Resize to match training
+            ToImage(),  # Convert to tensor image
+            ToDtype(torch_module.float32, scale=True),  # Convert to float32 and scale
+            Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])  # ImageNet normalization
         ])
-        print("Transforms ready (no resizing)")
+        print(f"Transforms ready (resizing to {self.image_size})")
     
     def _get_torch_model(self):
         """Get the actual PyTorch model (handle Lightning wrapper)"""
@@ -504,9 +513,10 @@ def main():
     """Main function"""
     print("Complete PatchCore Model Validation")
     print("="*60)
-    
-    # Find model
+
+    # Find model (updated to match train.py output location)
     model_paths = [
+        "models/minimal/patchcore_minimal.pth",  # train.py output location
         "models/deployment/patchcore_deployment.pth",
         "models/saved_models/patchcore_model.pth",
         "models/saved_models/latest/patchcore_model.pth"
