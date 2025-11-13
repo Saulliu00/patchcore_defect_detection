@@ -1,0 +1,17 @@
+# PatchCore Raspberry Pi Requirements
+# Install with: pip install -r requirements.txt
+
+# PyTorch CPU version for Raspberry Pi
+torch>=2.0.0
+torchvision>=0.15.0
+
+# Image processing
+opencv-python>=4.8.0
+pillow>=10.0.0
+
+# Utilities
+numpy>=1.24.0
+pyyaml>=6.0
+
+# Optional: Camera support (uncomment if using Pi Camera)
+# picamera2
