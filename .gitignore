@@ -27,6 +27,7 @@ MANIFEST
 
 # Virtual Environment
 venv/
+.venv/
 env/
 ENV/
 env.bak/
@@ -63,6 +64,9 @@ logs/tensorboard/
 *.swp
 *.swo
 *~
+
+# Claude Code
+.claude/
 
 # OS
 .DS_Store

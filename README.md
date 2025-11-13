@@ -1,219 +1,329 @@
 # PatchCore Defect Detection System
 
-A complete solution for manufacturing parts defect detection using PatchCore anomaly detection with high-resolution training and tiling strategy, optimized for NVIDIA RTX 3080 Ti training and Raspberry Pi 5 deployment.
+A complete solution for manufacturing defect detection using PatchCore anomaly detection, optimized for NVIDIA RTX 3080 Ti training and Raspberry Pi 5 deployment.
 
-## 🎯 Features
+## Features
 
-- **PatchCore Anomaly Detection**: State-of-the-art anomaly detection using Anomalib
-- **High-Resolution Training**: Optimized for 1024x1024+ images on RTX 3080 Ti
-- **Tiling Strategy**: Efficient inference on large images with overlap stitching
-- **Raspberry Pi Deployment**: Complete deployment solution for Raspberry Pi 5 with camera
-- **Real-time Monitoring**: Continuous defect detection with configurable intervals
-- **CSV Database**: Automatic logging and analytics of all detections
-- **Visualization**: Anomaly heatmaps and result overlays
+- **PatchCore Anomaly Detection**: State-of-the-art anomaly detection using Anomalib 2.x
+- **High-Resolution Support**: Works with 512x512 images (configurable)
+- **Raspberry Pi Ready**: Standalone inference without Anomalib dependency
+- **Visualization Tools**: Detailed per-image results with anomaly heatmaps
+- **Simple Workflow**: Minimal scripts for training, validation, and deployment
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Prerequisites
-- Python 3.8+
+- Python 3.12+ (tested with Python 3.12.10)
 - NVIDIA GPU with CUDA support (tested on RTX 3080 Ti)
-- For deployment: Raspberry Pi 5 with camera module
+- For deployment: Raspberry Pi 5
 
 ### Installation
 
 1. **Clone the repository**
 ```bash
-git clone https://github.com/yourusername/patchcore-defect-detection.git
-cd patchcore-defect-detection
+git clone https://github.com/Saulliu00/patchcore_defect_detection.git
+cd patchcore_defect_detection
 ```
 
-2. **Run setup script**
+2. **Create virtual environment**
 ```bash
-python setup_project.py
+python3 -m venv .venv
+source .venv/bin/activate  # On Windows: .venv\Scripts\activate
 ```
 
-This will:
-- Detect your GPU and install CUDA-enabled PyTorch
-- Create project structure
-- Install all dependencies
-- Generate optimized configuration
+3. **Install dependencies**
+```bash
+pip install -r requirements.txt
+```
+
+**Environment Details:**
+- Python: 3.12.10
+- PyTorch: 2.9.0
+- Anomalib: 2.2.0
+- Lightning: 2.5.6
 
 ### Data Preparation
 
-1. **Organize your images**:
+Organize your images in this structure:
 ```
 data/
-├── train/good/           # Normal parts only (50-100+ images)
-├── test/good/           # Normal test images (20+ images)  
-└── test/defective/      # Defective test images (20+ images)
+├── train/
+│   └── good/              # Normal parts only (200+ images recommended)
+├── test/
+│   ├── good/             # Normal test images (50+ images)
+│   └── defective/        # Defective test images (20+ images)
 ```
 
-2. **Image requirements**:
-- High resolution (1024x1024+ recommended)
+**Image requirements:**
+- Resolution: 512x512 recommended (configurable in `config/patchcore_config.yaml`)
+- Format: JPG or PNG
 - Consistent lighting and positioning
-- JPG or PNG format
 - Clear, focused images
 
-### Training
+## Training
+
+### Train the Model
 
 ```bash
-# Start training (optimized for RTX 3080 Ti)
 python train.py
-
-# Monitor training progress
-tensorboard --logdir logs/tensorboard
 ```
 
-### Testing
+**What happens:**
+- Trains PatchCore model with ResNet18 backbone
+- Uses only normal (good) images from `data/train/good/`
+- Saves model to `models/minimal/patchcore_minimal.pth`
+- Training is fast (1 epoch) as PatchCore learns from features
+
+**Configuration:**
+- Edit `config/patchcore_config.yaml` to adjust:
+  - Image size (default: 512x512)
+  - Backbone (default: resnet18)
+  - Coreset sampling ratio (default: 0.1)
+  - Batch size (default: 1)
+
+## Validation
+
+### Basic Validation
 
 ```bash
-# Test trained model locally
-python test_model.py
+python validate_model.py
 ```
 
-### Deployment to Raspberry Pi
+**Outputs:**
+- Overall accuracy and metrics
+- Mean anomaly scores for normal vs defective images
+- Optimal threshold recommendation
+
+### Validation with Visualization
 
 ```bash
-# Prepare deployment package
-python deploy_to_pi.py --model_path models/deployment/patchcore_deployment.pth --pi_address 192.168.1.100
-
-# Or create manual deployment package
-python deploy_to_pi.py --model_path models/deployment/patchcore_deployment.pth
+python validate_with_visualization.py
 ```
 
-## 🏗️ Project Structure
+**Outputs:**
+- `validation_results/detailed_results.csv` - Per-image scores and predictions
+- `validation_results/visualizations/` - Heatmap overlays for each image
+- Detailed metrics including precision, recall, F1 score
+- List of misclassified images
+
+**CSV Format:**
+```csv
+filename,category,true_label,predicted_label,score,correct,path
+image001.jpg,normal,normal,normal,0.8234,True,data/test/good/image001.jpg
+```
+
+## Deployment to Raspberry Pi
+
+### Step 1: Generate Deployment Package
+
+```bash
+python deploy_to_pi.py
+```
+
+**What it creates in `pi_deployment/`:**
+- `pi_inference.py` - Standalone inference script (no Anomalib needed)
+- `patchcore_pi.pth` - Optimized model checkpoint
+- `requirements.txt` - Minimal dependencies (torch, torchvision, opencv, pillow)
+- `README.md` - Deployment instructions
+
+### Step 2: Transfer to Raspberry Pi
+
+```bash
+# Copy the entire pi_deployment folder to your Raspberry Pi
+scp -r pi_deployment/ pi@raspberrypi.local:~/
+```
+
+### Step 3: Run Inference on Raspberry Pi
+
+On the Raspberry Pi:
+
+```bash
+cd ~/pi_deployment
+
+# Install dependencies
+pip3 install -r requirements.txt
+
+# Run inference on images
+python3 pi_inference.py --input /path/to/images --output results.csv
+
+# Optional arguments:
+# --threshold 0.95       # Anomaly threshold (default: 0.95)
+# --checkpoint path.pth  # Model checkpoint (default: patchcore_pi.pth)
+# --device cpu           # Device: cpu or cuda (default: cpu)
+```
+
+**Output CSV Format:**
+```csv
+filename,score,predicted_label,path
+image001.jpg,0.8234,normal,/path/to/images/image001.jpg
+image002.jpg,0.9876,defective,/path/to/images/image002.jpg
+```
+
+## Project Structure
 
 ```
 patchcore_defect_detection/
-├── data/                     # Training and test data
-├── src/                      # Source code
-│   ├── training/            # Training pipeline
-│   ├── inference/           # Inference and tiling
-│   ├── utils/              # Utilities
-│   └── deployment/         # Raspberry Pi deployment
-├── config/                  # Configuration files
-├── models/                  # Saved models
-├── database/               # Detection results
-├── logs/                   # Training logs
-├── train.py               # Main training script
-├── test_model.py          # Local testing script
-└── deploy_to_pi.py        # Deployment script
+├── config/
+│   └── patchcore_config.yaml      # Configuration (image size, model params)
+├── data/
+│   ├── train/good/                # Training images (normal only)
+│   ├── test/good/                 # Test normal images
+│   └── test/defective/            # Test defective images
+├── models/
+│   └── minimal/
+│       └── patchcore_minimal.pth  # Trained model
+├── pi_deployment/                  # Generated deployment package
+│   ├── pi_inference.py            # Standalone inference script
+│   ├── patchcore_pi.pth           # Optimized checkpoint
+│   ├── requirements.txt           # Minimal dependencies
+│   └── README.md                  # Deployment instructions
+├── validation_results/             # Validation outputs
+│   ├── detailed_results.csv       # Per-image results
+│   └── visualizations/            # Heatmap images
+├── train.py                       # Training script
+├── validate_model.py              # Basic validation
+├── validate_with_visualization.py # Detailed validation with viz
+└── deploy_to_pi.py                # Generate deployment package
 ```
 
-## 🎮 Hardware Requirements
+## Hardware Requirements
 
-### Local Training Machine
+### Training Machine
 - **GPU**: NVIDIA RTX 3080 Ti (12GB VRAM) or equivalent
 - **RAM**: 16GB+ recommended
-- **Storage**: 50GB+ available space
-- **CUDA**: 11.8 or compatible
+- **Storage**: 20GB+ available space
+- **OS**: Linux/macOS/Windows with CUDA 11.8+
 
 ### Raspberry Pi 5 Deployment
 - Raspberry Pi 5 (4GB/8GB recommended)
-- Raspberry Pi Camera Module or USB camera
-- MicroSD card (64GB+ Class 10)
-- Adequate power supply
+- Camera module or USB camera (optional)
+- MicroSD card (32GB+ Class 10)
+- Adequate power supply (27W USB-C)
 
-## 🔧 Configuration
+## Model Architecture
 
-The system is pre-configured for RTX 3080 Ti with:
-- **Batch Size**: 16 (utilizing 12GB VRAM)
-- **Mixed Precision**: Enabled for 2x speed boost
-- **Workers**: 8 parallel data loaders
-- **Image Size**: 1024x1024 high resolution
-- **Tiling**: 256x256 tiles with 50% overlap
+**PatchCore Details:**
+- **Backbone**: ResNet18 (lightweight, fast inference)
+- **Layers**: layer2, layer3 feature extraction
+- **Training**: One-class learning (normal samples only)
+- **Memory Bank**: Stores representative feature patches
+- **Scoring**: K-nearest neighbors distance (k=9)
+- **Coreset Sampling**: 10% of features for efficiency
 
-Edit `config/patchcore_config.yaml` to customize settings.
+## Configuration Reference
 
-## 📊 Usage Examples
+Edit `config/patchcore_config.yaml`:
 
-### Continuous Monitoring on Raspberry Pi
-```python
-from src.deployment.raspberry_pi_detector import RaspberryPiDetector
+```yaml
+model:
+  backbone: resnet18           # Options: resnet18, wide_resnet50_2
+  layers: [layer2, layer3]     # Feature extraction layers
+  coreset_sampling_ratio: 0.1  # Percentage of features to keep
+  num_neighbors: 9             # K for K-NN scoring
 
-detector = RaspberryPiDetector(
-    model_path="models/patchcore_model.pth",
-    confidence_threshold=0.5
-)
-
-# Run continuous monitoring
-detector.continuous_monitoring(
-    capture_interval=5.0,
-    save_images=True
-)
+dataset:
+  image_size: [512, 512]       # Input image size
+  normalization: imagenet      # Normalization strategy
 ```
 
-### Batch Processing
-```python
-# Process directory of images
-detector.batch_process_directory("input/images/", "output/results/")
-```
+## Troubleshooting
 
-### Get Statistics
-```python
-# Get detection statistics
-stats = detector.get_detection_statistics(days=7)
-print(f"Defect rate: {stats['defect_rate']:.2f}%")
-```
+### Training Issues
 
-## 📈 Model Performance
+**"No training data found"**
+- Ensure images are in `data/train/good/`
+- Check image format (JPG/PNG)
+- Verify file permissions
 
-The PatchCore model achieves:
-- **High Accuracy**: >95% detection rate on clear defects
-- **Low False Positives**: <5% on well-prepared normal data
-- **Fast Inference**: Real-time processing on Raspberry Pi 5
-- **Scalable**: Handles high-resolution images efficiently
+**Out of memory errors**
+- Reduce `train_batch_size` in config (try 1)
+- Reduce `image_size` (try [256, 256])
+- Close other GPU applications
 
-## 🛠️ Troubleshooting
+### Validation Issues
 
-### Common Issues
+**All images predicted as normal (0% defect detection)**
+- Need more diverse training data (500+ images recommended)
+- Try stronger backbone (wide_resnet50_2)
+- Increase coreset_sampling_ratio to 0.2-0.3
+- Add layer4 to feature extraction layers
+- Ensure defects are clearly visible and significant
 
-**CUDA not detected**:
-```bash
-# Verify NVIDIA drivers
-nvidia-smi
-
-# Check PyTorch CUDA
-python -c "import torch; print(torch.cuda.is_available())"
-```
-
-**Poor detection accuracy**:
-- Increase training data (especially normal samples)
+**Scores overlap between normal and defective**
+- Defects may be too subtle
 - Improve image quality and consistency
-- Adjust confidence threshold
-- Check for consistent lighting/setup
+- Collect more representative normal samples
+- Retrain with better quality data
 
-**Performance issues**:
+### Deployment Issues
+
+**"No module named anomalib" on Raspberry Pi**
+- Good! The standalone script doesn't need Anomalib
+- Just install: `pip3 install torch torchvision opencv-python pillow`
+
+**Slow inference on Raspberry Pi**
+- Reduce image size in inference
+- Use lighter checkpoint (ResNet18)
+- Consider quantization for faster CPU inference
+
+**Memory errors on Raspberry Pi**
+- Process images one at a time
 - Reduce image resolution
-- Increase tile stride (less overlap)
-- Monitor GPU memory usage
+- Use 8GB Raspberry Pi 5 model
 
-### Getting Help
+## Performance Tips
 
-1. Check the [troubleshooting section](./docs/troubleshooting.md)
-2. Review logs for error messages
-3. Ensure hardware compatibility
-4. Verify data format and quality
+### Improving Model Accuracy
+1. **More training data**: 500-1000+ normal images
+2. **Stronger backbone**: Switch to wide_resnet50_2
+3. **More features**: Add layer4 to layers list
+4. **Higher coreset ratio**: Increase to 0.2 or 0.3
+5. **Better data quality**: Consistent lighting, positioning
 
-## 📄 License
+### Optimizing Inference Speed
+1. **Smaller backbone**: Use resnet18 (current)
+2. **Lower resolution**: Reduce image_size to 256x256
+3. **CPU optimization**: Consider quantization
+4. **Batch processing**: Process multiple images together
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+## Key Scripts Reference
 
-## 🤝 Contributing
+| Script | Purpose | Output |
+|--------|---------|--------|
+| `train.py` | Train PatchCore model | `models/minimal/patchcore_minimal.pth` |
+| `validate_model.py` | Basic validation metrics | Console output with accuracy |
+| `validate_with_visualization.py` | Detailed validation | CSV + heatmap visualizations |
+| `deploy_to_pi.py` | Generate Pi package | `pi_deployment/` directory |
 
+## Environment
+
+The project is tested with:
+- **Python**: 3.12.10
+- **PyTorch**: 2.9.0 with CUDA 12.1
+- **Anomalib**: 2.2.0
+- **Lightning**: 2.5.6
+- **GPU**: NVIDIA RTX 3080 Ti (12GB)
+- **OS**: macOS (also compatible with Linux/Windows)
+
+## References
+
+- [PatchCore Paper](https://arxiv.org/abs/2106.08265) - Original PatchCore research
+- [Anomalib Documentation](https://anomalib.readthedocs.io/) - Framework documentation
+- [PyTorch Lightning](https://lightning.ai/docs/pytorch/stable/) - Training framework
+- [Raspberry Pi 5 Documentation](https://www.raspberrypi.com/documentation/)
+
+## License
+
+This project is licensed under the MIT License.
+
+## Contributing
+
+Contributions are welcome! Please:
 1. Fork the repository
-2. Create feature branch (`git checkout -b feature/improvement`)
-3. Commit changes (`git commit -am 'Add improvement'`)
-4. Push to branch (`git push origin feature/improvement`)
-5. Create Pull Request
+2. Create a feature branch
+3. Make your changes
+4. Submit a pull request
 
-## 📚 References
+## Tags
 
-- [PatchCore Paper](https://arxiv.org/abs/2106.08265)
-- [Anomalib Documentation](https://anomalib.readthedocs.io/)
-- [PyTorch Lightning](https://www.pytorchlightning.ai/)
-- [Raspberry Pi Documentation](https://www.raspberrypi.org/documentation/)
-
-## 🏷️ Tags
-
-`anomaly-detection` `patchcore` `defect-detection` `pytorch` `raspberry-pi` `computer-vision` `manufacturing` `quality-control` `rtx-3080-ti` `cuda`
+`anomaly-detection` `patchcore` `defect-detection` `pytorch` `raspberry-pi` `computer-vision` `manufacturing` `quality-control` `anomalib`
